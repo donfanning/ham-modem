@@ -166,7 +166,7 @@ Phases are ordered by value. The first is a prerequisite for every HF protocol a
       2026-10-22, [lab note](../lab/ARDOP_HOST_PAT_2026_10_22.md): `ham-modem --modem ardop`; Pat 1.0.0 P2P
       through ham-modem <-> ardopcf delivers messages both ways; across ConfBridge room 7300 at 8 kHz G.711 too;
       RTP loss 1-5% survives (lab note); FEC mode done, live against ardopcf both ways; IAX2 and third-station (monitor, carrier and noise jammer) runs done in the lab note.)*
-11. **FreeDATA / codec2 OFDM data modes** (medium): wrap libcodec2 (LGPL) for the `datac*` modes rather than reimplement them, and add FreeDATA's ARQ/session layer if wanted.
+11. **FreeDATA / codec2 OFDM data modes** (medium): wrap libcodec2 (LGPL) for the `datac*` modes rather than reimplement them, and add FreeDATA's ARQ/session layer if wanted. *(11.0 modem wrapper done 2026-10-22, [lab note](../lab/FREEDATA_CODEC2_2026_10_22.md): datac0/1/3/4/13 via ctypes, tests, SNR sweeps on AWGN/moderate/poor; still open: TNC integration (AX.25 over datac bursts), FreeDATA ARQ/session layer)*
 12. **Legacy HF ARQ modes** (medium): **PACTOR-I** (FSK 100/200 bd, memory-ARQ, Huffman), **AMTOR/SITOR-A/B** (CCIR 476/625) and **G-TOR** (Golay coding; Kantronics' DCC paper). All are published, and give legacy BBS interop.
 13. **Published military HF standards** (large, optional): **STANAG 4285** and **MIL-STD-188-110A/B** serial-tone PSK, with **STANAG 5066** as the data-link layer. They are robust HF waveforms with public specifications.
 14. **Keyboard / messaging modes** (medium each, lower TNC value): RTTY (Baudot), PSK31/63, MFSK16, Olivia/Contestia, Thor/DominoEX, and JS8. Interop targets: fldigi and JS8Call.
