@@ -28,9 +28,9 @@ SNR (dB in 3 kHz) at which every one of 10 frames decoded / at which at least ha
 
 | channel | datac0 | datac1 | datac3 | datac4 | datac13 |
 |---|---|---|---|---|---|
-| AWGN | 0 / 0 | 4 / 2 | -2 / -2 | -6 / -8 | -8 / <-8 |
-| moderate (1 ms, 0.5 Hz) | 12 / 0 | 10 / 6 | 12 / 0 | 10 / -4 | 8 / -6 |
-| poor (2 ms, 1 Hz) | 6 / 2 | 8 / 6 | 4 / 0 | 4 / -4 | 2 / -6 |
+| AWGN | 0 / 0 | 4 / 4 | -2 / -2 | -6 / -8 | -8 / <-8 |
+| moderate (1 ms, 0.5 Hz) | 12 / 2 | 10 / 6 | 12 / 2 | 10 / -4 | 8 / -6 |
+| poor (2 ms, 1 Hz) | 6 / 4 | 8 / 6 | 4 / 0 | 4 / -4 | 2 / -6 |
 
 (datac1 carries 510 B per frame and needs the most SNR; datac13/4 are the narrow robust modes. Fading with only a
 single frame and no repeat is the hard case; FreeDATA's ARQ layer covers it by repeating.)
