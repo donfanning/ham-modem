@@ -29,6 +29,17 @@ def drift(x, ppm):
     return np.interp(t, np.arange(len(x)), x)
 
 
+def drift_bandlimited(x, ppm, up=8):
+    """Clock drift without linear interpolation's own low-pass (it distorts signals near Nyquist):
+    FFT-interpolate ``up`` times first, then resample."""
+    n = len(x)
+    spec = np.zeros(n * up // 2 + 1, complex)
+    full = np.fft.rfft(x)
+    spec[:len(full)] = full
+    y = np.fft.irfft(spec, n * up) * up
+    return np.interp(np.arange(0, n - 1, 1 + ppm * 1e-6) * up, np.arange(len(y)), y)
+
+
 def frame_loss(x, p, rng, frame=160):
     """Drop 20 ms RTP frames with probability ``p``, concealed by repeating the previous frame."""
     x = x.copy()

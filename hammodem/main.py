@@ -19,7 +19,7 @@ import time
 
 from .agw import AgwServer
 from .kiss_tcp import KissTcpServer
-from .modems import MODEMS
+from .modems import MODEMS, default_rate
 from .serial import DeviceSerial, PtySerial
 from .tnc import Tnc
 from .audio.rtp import CODECS
@@ -118,7 +118,8 @@ class Runtime:
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="ham-modem", description="AX.25 packet TNC over VoIP audio")
     ap.add_argument("--modem", choices=MODEMS, default="afsk1200")
-    ap.add_argument("--rate", type=int, help="audio sample rate (default 8000; 16000 for g3ruh9600)")
+    ap.add_argument("--rate", type=int, help="audio sample rate (default: 8000 for AFSK, 16000 for g3ruh9600, "
+                                             "48000 for g3ruh19200/38400)")
     ap.add_argument("--kiss-pty", action="append", default=[], metavar="PATH",
                     help="create a pty speaking KISS, symlinked at PATH (repeatable)")
     ap.add_argument("--serial", action="append", default=[], metavar="DEV[:BAUD]",
@@ -155,11 +156,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("-m", "--monitor", action="store_true", help="print frames heard and sent")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
-    wide = args.modem == "g3ruh9600"
     if args.rate is None:
-        args.rate = 16000 if wide else 8000
+        args.rate = default_rate(args.modem)
     if args.codec is None:
-        args.codec = ["l16-16k"] if args.rate == 16000 else ["pcmu", "pcma"]
+        args.codec = {16000: ["l16-16k"], 48000: ["l16-48k"]}.get(args.rate, ["pcmu", "pcma"])
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
 

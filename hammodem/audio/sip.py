@@ -23,7 +23,7 @@ import uuid
 
 import numpy as np
 
-from .rtp import CODECS, Codec, RtpSession
+from .rtp import CODECS, Codec, RtpSession, frame_ms
 
 log = logging.getLogger("hammodem.sip")
 
@@ -71,11 +71,12 @@ def digest_response(user: str, password: str, method: str, uri: str, ch: dict[st
 
 
 def build_sdp(ip: str, port: int, codecs: list[Codec], session: str = "ham-modem") -> str:
+    ptime = frame_ms(codecs[0].rate) if codecs else 20
     pts = " ".join(str(c.pt) for c in codecs)
     lines = ["v=0", f"o=- {int(time.time())} 1 IN IP4 {ip}", f"s={session}", f"c=IN IP4 {ip}", "t=0 0",
              f"m=audio {port} RTP/AVP {pts}"]
     lines += [f"a=rtpmap:{c.pt} {c.name}/{c.rate}" for c in codecs]
-    lines += ["a=ptime:20", "a=sendrecv"]
+    lines += [f"a=ptime:{ptime}", "a=sendrecv"]
     return "\r\n".join(lines) + "\r\n"
 
 
@@ -139,7 +140,7 @@ class SipLeg:
         self.rate = self.codecs[0].rate
         if any(c.rate != self.rate for c in self.codecs):
             raise ValueError("all offered codecs must share the TNC's sample rate")
-        self.frame_samples = self.rate // 50
+        self.frame_samples = self.rate * frame_ms(self.rate) // 1000
         self.user, self._password, self.from_user = user, password, user or from_user
         self.redial_after = redial_after
         self.sim_loss = sim_loss
@@ -393,7 +394,7 @@ class SipLeg:
         self._send(("\r\n".join(lines) + "\r\n\r\n").encode(), d["peer"])
 
     def _start_media(self, codec: Codec, remote: tuple[str, int]) -> None:
-        self.rtp = RtpSession(self.media, codec, remote)
+        self.rtp = RtpSession(self.media, codec, remote, frame_ms(codec.rate))
         self.calls += 1
         self._set_state("up", f"{codec.name}/{codec.rate} media {remote[0]}:{remote[1]}")
 

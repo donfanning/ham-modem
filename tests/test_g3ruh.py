@@ -71,3 +71,30 @@ class G3ruhTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class G3ruhFastTest(unittest.TestCase):
+    def run_rate(self, baud, fs, fn, minimum, n=12):
+        frames = make_frames(n, extra=200)
+        mod, dem = G3ruhModulator(fs, baud), G3ruhDemodulator(fs, baud)
+        audio = np.concatenate([np.concatenate((mod.modulate([f], 0.05), np.zeros(fs // 20, np.int16)))
+                                for f in frames]).astype(float)
+        pcm = impair.to_pcm(fn(audio, np.random.default_rng(9)))
+        got = []
+        for i in range(0, len(pcm), fs // 100):
+            got += dem.feed(pcm[i:i + fs // 100])
+        self.assertEqual(len(got), sum(g in frames for g in got))
+        self.assertGreaterEqual(sum(g in frames for g in got), minimum)
+
+    def test_19200_on_32k_and_48k(self):
+        for fs in (32000, 48000):
+            # band-limited drift: linear interpolation's own roll-off near Nyquist would be the impairment
+            self.run_rate(19200, fs, lambda a, r: impair.noise(impair.drift_bandlimited(a, 300), 1500, r), 12)
+
+    def test_38400_on_48k(self):
+        self.run_rate(38400, 48000, lambda a, r: impair.noise(impair.drift_bandlimited(a, 300), 1000, r), 12)
+
+    def test_rate_plan_refuses_impossible_legs(self):
+        for baud, fs in ((19200, 16000), (38400, 32000), (9600, 8000)):
+            with self.assertRaises(ValueError):
+                G3ruhModulator(fs, baud)

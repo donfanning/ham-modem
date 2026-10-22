@@ -56,6 +56,17 @@ class RtpTest(unittest.TestCase):
         self.assertEqual(b.receive(p[3], ("10.0.0.9", 4000)), [])            # foreign address
         self.assertEqual(b.stats["late_or_duplicate"], 1)
 
+    def test_peer_ptime_differs_from_ours(self):
+        # We send 10 ms, the peer (Asterisk) sends 20 ms: no gap must be invented between its packets.
+        a_sock = FakeSock()
+        a = RtpSession(a_sock, L16_16K, ("10.0.0.2", 5000), frame_ms=20)
+        b = RtpSession(FakeSock(), L16_16K, ("10.0.0.1", 4000), frame_ms=10)
+        for _ in range(3):
+            a.send(np.ones(320, np.int16))
+        got = [blk for p in a_sock.sent for blk in b.receive(p, ("10.0.0.1", 4000))]
+        self.assertEqual([len(g) for g in got], [320, 320, 320])
+        self.assertEqual(b.stats["concealed_samples"], 0)
+
     def test_l16_network_order(self):
         a, wire, b = self.pair(L16_16K)
         x = np.arange(320, dtype=np.int16) * 50

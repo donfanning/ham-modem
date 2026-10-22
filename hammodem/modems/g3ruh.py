@@ -1,15 +1,16 @@
-"""9600 bd G3RUH / K9NG baseband FSK.
+"""G3RUH / K9NG baseband FSK at 9600, 19200 or 38400 bd.
 
 Line coding, as Direwolf does it (needed for interop): HDLC -> NRZI -> self-synchronising scrambler
 1 + x^12 + x^17 -> +/-1 levels -> raised-cosine low-pass -> straight into the FM modulator (here: the audio leg).
 Polarity does not matter: an inverted signal descrambles to inverted NRZI, which decodes the same.
 
-The signal occupies roughly 0-7 kHz, so it needs a linear 16 kHz (or better) leg end to end -- L16/slin16 and a
-ConfBridge mixing at >= 16 kHz. G.711's 4 kHz Nyquist limit cannot carry it, and the demodulator refuses 8 kHz.
+The signal occupies 0 to (1 + beta) x baud / 2, so it needs a linear leg end to end: 9600 bd fits L16 at 16 kHz,
+19200 bd needs 32 kHz or more, 38400 bd needs 48 kHz (with the roll-off squeezed to beta = 0.2). G.711's 4 kHz
+Nyquist limit carries none of them, and the modem refuses a rate that cannot hold its band.
 
-DSP runs at an internal 48 kHz (5 samples per symbol): transmit shapes there and decimates to the leg rate;
-receive interpolates up, low-passes, removes DC, then slices and recovers the clock with the same PLL scheme as the
-AFSK receiver.
+DSP runs at an internal 5 samples per symbol (48 / 96 / 192 kHz): transmit shapes there and decimates to the leg
+rate; receive interpolates up, low-passes, removes DC, then slices and recovers the clock with the same PLL scheme
+as the AFSK receiver.
 """
 
 from __future__ import annotations
@@ -21,16 +22,22 @@ import numpy as np
 from .afsk import _Fir, lowpass_taps
 from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, burst_bits
 
-BAUD = 9600
-INTERNAL = 48000
-SPS = INTERNAL // BAUD                  # 5
+SPS = 5                                 # internal samples per symbol
+BAUDS = (9600, 19200, 38400)
+MIN_BETA = 0.15
 
 
-def _check_rate(fs: int) -> int:
-    if fs < 16000 or INTERNAL % fs:
-        raise ValueError(f"G3RUH 9600 needs a sample rate of 16000, 24000 or 48000 Hz (got {fs}); "
-                         "G.711 (8 kHz) cannot carry it -- use an L16/16 kHz leg")
-    return INTERNAL // fs
+def plan(baud: int, fs: int) -> tuple[int, int, float]:
+    """(internal rate, fs multiple, widest usable roll-off) for ``baud`` on an ``fs`` leg, or ValueError."""
+    if baud not in BAUDS:
+        raise ValueError(f"G3RUH baud must be one of {BAUDS}")
+    internal = baud * SPS
+    beta = min(0.5, 0.96 * fs / baud - 1)       # keep the band under 96% of Nyquist
+    if internal % fs or beta < MIN_BETA:
+        ok = [r for r in (16000, 24000, 32000, 48000, 96000) if (baud * SPS) % r == 0 and 0.96 * r / baud - 1 >= MIN_BETA]
+        raise ValueError(f"G3RUH {baud} bd cannot run on a {fs} Hz leg; use {' or '.join(map(str, ok))} Hz "
+                         f"linear audio (G.711 cannot carry baseband G3RUH)")
+    return internal, internal // fs, beta
 
 
 def raised_cosine(beta: float, span: int, sps: int) -> np.ndarray:
@@ -59,16 +66,15 @@ class Scrambler:
 
 
 class G3ruhModulator:
-    def __init__(self, fs: int = 16000, amplitude: float = 0.5, beta: float = 0.5) -> None:
-        self.fs, self.amplitude = fs, amplitude
-        self.decim = _check_rate(fs)
+    def __init__(self, fs: int = 16000, baud: int = 9600, amplitude: float = 0.5) -> None:
+        self.fs, self.baud, self.amplitude = fs, baud, amplitude
+        _, self.decim, beta = plan(baud, fs)
         self.nrzi, self.scr = NrziEncoder(), Scrambler()
         self._shape = _Fir(raised_cosine(beta, 8, SPS))
         self._phase = 0                    # decimation phase carried across bursts
-        self.baud = BAUD
 
     def flags_for(self, seconds: float) -> int:
-        return max(1, math.ceil(seconds * BAUD / 8))
+        return max(1, math.ceil(seconds * self.baud / 8))
 
     def modulate_bits(self, bits: list[int]) -> np.ndarray:
         levels = np.array(self.scr.scramble(self.nrzi.encode(bits)), dtype=np.float64) * 2 - 1
@@ -90,17 +96,21 @@ class G3ruhDemodulator:
     INERTIA_SEARCH = 0.50
     DCD_THRESHOLD = 0.4
 
-    def __init__(self, fs: int = 16000, energy_dcd_dbfs: float | None = -45.0) -> None:
-        self.fs = fs
-        self.interp = _check_rate(fs)
-        # One filter does both jobs: interpolation image rejection and the receive low-pass. Native 48 kHz
-        # input decodes best with a wide, short filter (Direwolf's gen_packets ramp: 53 -> 60 of Direwolf's 65);
-        # interpolated 16 kHz input needs the narrower, longer one to keep images and in-band noise down.
-        cutoff, span = (0.8, 4) if self.interp == 1 else (0.6, 8)
-        self._lp = _Fir(lowpass_taps(cutoff * BAUD, INTERNAL, span * SPS * 2 + 1) * self.interp)
+    def __init__(self, fs: int = 16000, baud: int = 9600, energy_dcd_dbfs: float | None = -45.0) -> None:
+        self.fs, self.baud = fs, baud
+        internal, self.interp, beta = plan(baud, fs)
+        # One filter does both jobs: interpolation image rejection and the receive low-pass. Input already at
+        # 5 samples/symbol decodes best with a wide, short filter (Direwolf's 9600 gen_packets ramp: 53 -> 60 of
+        # Direwolf's 65); interpolated input needs the narrower, longer one to keep images and in-band noise down.
+        # A squeezed roll-off (38400 bd on 48 kHz, beta 0.2) puts the band edge next to the first image, so the
+        # filter needs a sharper transition: 16 symbols of taps (40/40 clean vs 39/40 with 8).
+        # 19200 bd from 48 kHz (x2) behaves like native input (Direwolf's 19200 ramp: 28 -> 38 of its 43).
+        cutoff, span = (0.8, 4) if self.interp <= 2 else (0.6, 16 if beta < 0.3 else 8)
+        cutoff_hz = min(cutoff * baud, 0.48 * fs)
+        self._lp = _Fir(lowpass_taps(cutoff_hz, internal, span * SPS * 2 + 1) * self.interp)
         self._dc_win = 64 * SPS
         self._dc_hist = np.zeros(self._dc_win)
-        self.step = 2.0 * BAUD / INTERNAL
+        self.step = 2.0 / SPS
         self.phase = 0.0
         self.prev = 0
         self.quality = 0.0

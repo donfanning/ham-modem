@@ -14,7 +14,9 @@ import numpy as np
 
 class UdpAudio:
     def __init__(self, listen: tuple[str, int], peer: tuple[str, int] | None, fs: int = 8000,
-                 frame_ms: int = 20) -> None:
+                 frame_ms: int | None = None) -> None:
+        from .rtp import frame_ms as default_ms  # noqa: PLC0415
+        frame_ms = frame_ms or default_ms(fs)
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(listen)
         self.sock.setblocking(False)

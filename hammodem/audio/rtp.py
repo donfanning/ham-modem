@@ -47,7 +47,14 @@ class Codec:
 
 PCMU, PCMA = Codec("PCMU", 0, 8000), Codec("PCMA", 8, 8000)
 L16_16K = Codec("L16", 96, 16000)
-CODECS = {"pcmu": PCMU, "pcma": PCMA, "l16-16k": L16_16K}
+L16_48K = Codec("L16", 97, 48000)
+CODECS = {"pcmu": PCMU, "pcma": PCMA, "l16-16k": L16_16K, "l16-48k": L16_48K}
+
+
+def frame_ms(rate: int) -> int:
+    """Packet duration: 20 ms, but 10 ms at 32 kHz and up so an L16 packet stays under a 1500-byte MTU
+    (20 ms of L16/48000 would be 1920 bytes and fragment)."""
+    return 10 if rate >= 32000 else 20
 
 
 class RtpSession:
@@ -59,6 +66,7 @@ class RtpSession:
         self._ssrc = int.from_bytes(os.urandom(4), "big")
         self._rx_ssrc: int | None = None
         self._rx_ts: int | None = None
+        self._rx_len = self.frame_samples          # samples in the previous packet (peers choose their own ptime)
         self._last = np.zeros(self.frame_samples, np.int16)
         self.stats = {"sent": 0, "received": 0, "late_or_duplicate": 0, "concealed_samples": 0, "foreign": 0}
 
@@ -93,7 +101,7 @@ class RtpSession:
             if step == 0 or step >= 0x80000000:
                 self.stats["late_or_duplicate"] += 1
                 return []
-            missing = step - self.frame_samples
+            missing = step - self._rx_len
             if 0 < missing <= MAX_GAP_SAMPLES:
                 self.stats["concealed_samples"] += missing
                 out.append(self._conceal(missing))
@@ -101,11 +109,12 @@ class RtpSession:
         pcm = self.codec.decode(packet[start:end])
         if len(pcm):
             self._last = pcm
+            self._rx_len = len(pcm)
         self.stats["received"] += 1
         out.append(pcm)
         return out
 
     def _conceal(self, missing: int) -> np.ndarray:
-        if missing > CONCEAL_MAX_FRAMES * self.frame_samples:
+        if missing > CONCEAL_MAX_FRAMES * self._rx_len:
             return np.zeros(missing, np.int16)
         return np.resize(self._last, missing)
