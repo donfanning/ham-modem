@@ -17,7 +17,7 @@ Design, research notes and phases: [docs/PLAN.md](docs/PLAN.md).
 | CSMA channel (p-persist, DCD from timing quality + in-band energy), KISS pty / tty / TCP | done; live test through `tools/audio_hub.py` with Direwolf monitoring |
 | AX.25 v2.0 connected mode (mod 8, REJ/poll recovery, digipeater paths), TNC-2 command mode (`--tnc2-pty`), AGWPE server (`--agw`) | done; live TNC-2 <-> AGWPE session through the ConfBridge ([lab note](lab/CONNECTED_MODE_2026_10_21.md)) |
 | SIP (dial / listen, digest), RTP (PCMU/PCMA/L16, loss concealment), Asterisk ConfBridge lab | **milestone 1 reached**: 3 stations in a ConfBridge, Direwolf monitoring ([lab note](lab/CONFBRIDGE_MILESTONE1_2026_10_21.md)) |
-| IAX2 leg | not yet (El-Modem's Rust `iax2` binding to port) |
+| IAX2 legs (`--iax-dial EXT@PBX`, `--iax-listen PBX`; G.711, AFSK modes) | done; mixed IAX2 + SIP room 48/48 ([lab note](lab/IAX2_2026_10_21.md)) |
 | G3RUH 9600 bd (`--modem g3ruh9600`, L16/16 kHz legs, room 7316) | done; Direwolf interop both ways, 48/48 through the 16 kHz ConfBridge ([lab note](lab/G3RUH_9600_2026_10_21.md)) |
 | G3RUH 19200 / 38400 bd (`--modem g3ruh19200` / `g3ruh38400`, L16/48 kHz legs, room 7348) | done; 19200 interoperates with Direwolf; live 48/48 in the 48 kHz room with CSMA/CD ([lab note](lab/G3RUH_FAST_2026_10_21.md)) |
 | PAM-4 57.6 kbit/s VoIP-native mode (`--modem pam57600`, 48 kHz legs; `pam19200` on 16 kHz) | done; live 48/48 in room 7348, 96.7% at 3% RTP loss vs 58% for AFSK 1200 ([lab note](lab/PAM4_57600_2026_10_21.md)) |
@@ -62,6 +62,14 @@ export PYTHONPATH=$PWD
 ```
 
 `kissattach ~/.ham-modem1 radio` (Linux AX.25 tools) works on the pty the same way. Offline:
+
+IAX2 needs the native binding (Rust + maturin; unset ARCHFLAGS if your shell sets it):
+
+```sh
+env -u ARCHFLAGS maturin build --release -m native/iax/Cargo.toml -i .venv/bin/python3.12
+.venv/bin/pip install native/iax/target/wheels/ham_modem_iax-*.whl
+HAM_MODEM_IAX_SECRET=... .venv/bin/python -m hammodem.main --iax-dial 7300@172.31.73.10 --kiss-tcp 8001
+```
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install numpy

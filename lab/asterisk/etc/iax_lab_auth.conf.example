@@ -1,0 +1,9 @@
+; Copy to iax_lab_auth.conf (git-ignored) and set a secret; stations pass it in HAM_MODEM_IAX_SECRET.
+[station]
+type = friend
+host = dynamic
+secret = CHANGE_ME
+context = ham
+disallow = all
+allow = ulaw
+requirecalltoken = no

@@ -139,6 +139,10 @@ def main(argv: list[str] | None = None) -> None:
     leg.add_argument("--sip-dial", metavar="EXT@HOST[:PORT]",
                      help="call a conference room or station and keep the call up (redial on hangup)")
     leg.add_argument("--sip-listen", action="store_true", help="answer incoming SIP calls (point-to-point link)")
+    leg.add_argument("--iax-dial", metavar="EXT@HOST[:PORT]",
+                     help="IAX2: call EXT through the PBX and keep the call up (G.711 mu-law; AFSK modes)")
+    leg.add_argument("--iax-listen", metavar="HOST[:PORT]", help="IAX2: register with the PBX and answer calls")
+    ap.add_argument("--iax-user", default="station", help="IAX2 user (secret from HAM_MODEM_IAX_SECRET)")
     ap.add_argument("--sip-port", type=int, default=0, help="local SIP UDP port (default: any; 5060 for --sip-listen)")
     ap.add_argument("--media-port", type=int, default=0, help="local RTP port (default: any)")
     ap.add_argument("--sip-user", help="digest user / From user (password from HAM_MODEM_SIP_PASSWORD)")
@@ -183,7 +187,14 @@ def main(argv: list[str] | None = None) -> None:
     if args.monitor:
         tnc.monitor = lambda d, text: print(f"{time.strftime('%H:%M:%S')} {d} {text}", flush=True)
 
-    if args.udp_audio:
+    if args.iax_dial or args.iax_listen:
+        if args.rate != 8000:
+            ap.error("IAX2 legs carry G.711 mu-law (8 kHz): use an AFSK modem or a SIP L16 leg")
+        from .audio.iax import IaxLeg  # noqa: PLC0415
+        ext, _, server = (args.iax_dial or "").rpartition("@")
+        audio = IaxLeg(server if args.iax_dial else args.iax_listen, args.iax_user,
+                       os.environ.get("HAM_MODEM_IAX_SECRET", ""), dial=ext or None, listen=bool(args.iax_listen))
+    elif args.udp_audio:
         lport, _, peer = args.udp_audio.partition(":")
         audio = UdpAudio(("0.0.0.0", int(lport)), _hostport(peer) if peer else None, args.rate)
     else:

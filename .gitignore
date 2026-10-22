@@ -5,3 +5,5 @@ __pycache__/
 *.egg-info/
 build/
 dist/
+lab/asterisk/etc/iax_lab_auth.conf
+native/iax/target/

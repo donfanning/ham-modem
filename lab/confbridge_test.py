@@ -56,13 +56,15 @@ def main():
     ap.add_argument("--fx25", type=int, default=0)
     ap.add_argument("--repeat", type=int, default=1)
     ap.add_argument("--il2p", default="off")
+    ap.add_argument("--iax", type=int, default=0, help="the first N stations dial over IAX2 (secret: HAM_MODEM_IAX_SECRET)")
     ap.add_argument("--base-port", type=int, default=18100)
     args = ap.parse_args()
 
     env = dict(os.environ, PYTHONPATH=str(ROOT))
     procs, logs = [], []
     for i in range(args.stations):
-        cmd = [sys.executable, "-m", "hammodem.main", "--sip-dial", args.room, "--modem", args.modem,
+        leg = ["--iax-dial", args.room.split(":")[0]] if i < args.iax else ["--sip-dial", args.room]
+        cmd = [sys.executable, "-m", "hammodem.main", *leg, "--modem", args.modem,
                "--kiss-tcp", str(args.base_port + i), "--txdelay", str(args.txdelay), "--sim-loss", str(args.loss), "-m"]
         if args.collision_detect:
             cmd.append("--collision-detect")
@@ -115,7 +117,7 @@ def main():
             log.close()
 
     total = got = 0
-    print(f"{args.modem}{' CSMA/CD' if args.collision_detect else ''}{f' FX.25/{args.fx25}' if args.fx25 else ''}{f' x{args.repeat}' if args.repeat > 1 else ''}{f' IL2P/{args.il2p}' if args.il2p != 'off' else ''}: "
+    print(f"{args.modem}{' CSMA/CD' if args.collision_detect else ''}{f' FX.25/{args.fx25}' if args.fx25 else ''}{f' x{args.repeat}' if args.repeat > 1 else ''}{f' IL2P/{args.il2p}' if args.il2p != 'off' else ''}{f' ({args.iax} via IAX2)' if args.iax else ''}: "
           f"{args.stations} stations, {args.frames} frames each, simulated loss {args.loss:.1%}")
     print("receiver \\ sender  " + "  ".join(f"st{j:<4}" for j in range(args.stations)))
     for i in range(args.stations):
