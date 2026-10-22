@@ -23,12 +23,14 @@ received in sequence is appended to ``received``.
 from __future__ import annotations
 
 import random
+import re
 from collections import deque
 from typing import Callable
 
 import numpy as np
 
 from . import codec, modulate
+from .busy import CHECK_MS, BusyDetector
 from .demod import Decoded
 from .stream import Phy
 
@@ -50,6 +52,7 @@ CONACK_CODES = {v: k for k, v in codec.CONACK.items()}
 REPLY_DELAY_MS = 250          # ardopcf waits this long after a decode before answering
 PENDING_TIMEOUT_MS = 10_000   # IRS: ConAck sent, waiting for the caller's ConAck
 FINAL_ID_MS = 3000
+ID_DUE_MS = 540_000           # ID every 10 minutes of transmitting; ardopcf starts trying after 9
 DISC_FALLBACK_MS = 6000       # pending DISCONNECT with nothing heard for this long: send DISC anyway
 
 
@@ -112,6 +115,11 @@ class ArqStation:
         self.final_id_at = 0.0
         self._final_id = ""
         self.ping_target, self.ping_repeats = "", 0
+        self._id_clock = 0.0          # when transmitting began after the last ID frame (0: nothing sent since)
+        self._tx_is_id = False
+        self.busy = BusyDetector()
+        self.busy_block = False
+        self._busy_checked = 0.0
         # FEC (broadcast) mode
         self.protocol_mode = "ARQ"
         self.fec_mode, self.fec_repeats, self.fec_id = "4FSK.500.100", 0, False
@@ -189,6 +197,13 @@ class ArqStation:
             self._clear_outq()
             self._set_state("DISC")
 
+    def _id_due(self) -> bool:
+        return self._id_clock != 0 and self.now - self._id_clock > ID_DUE_MS
+
+    def _queue_id(self) -> None:
+        """An ID frame ahead of whatever is queued, leaving the frame to repeat untouched."""
+        self._txq.append((modulate.encode_idframe(self.local or self.mycall, self.grid), self.leader_ms))
+
     def send_id(self, call: str | None = None) -> None:
         self._send(modulate.encode_idframe(call or self.mycall, self.grid), self.leader_ms)
 
@@ -203,10 +218,20 @@ class ArqStation:
         else:
             frames = self.phy.feed(np.zeros(n))          # half duplex: deaf while keyed
         self.now += n * 1000 / self.fs
+        self._check_busy()
         for d in frames:
             self._on_frame(d)
         self._timers()
         return self._play(n)
+
+    def _check_busy(self) -> None:
+        """Busy detection runs only while idle in DISC (as ardopcf); BUSY TRUE / BUSY FALSE go to the host."""
+        if self.state != "DISC" or self._tx is not None or self.now - self._busy_checked < CHECK_MS:
+            return
+        self._busy_checked = self.now
+        was = self.busy.busy
+        if self.busy.update(self.phy.recent, self.now, int(re.match(r"\d+", self.bandwidth).group())) != was:
+            self._event(f"BUSY {'TRUE' if self.busy.busy else 'FALSE'}")
 
     def _play(self, n: int) -> np.ndarray:
         out = np.zeros(n, dtype=np.int16)
@@ -216,6 +241,9 @@ class ArqStation:
                 if not self._txq or self.now < self._not_before or self.phy.busy():
                     break
                 encoded, leader = self._txq.popleft()
+                self._tx_is_id = encoded[0] == codec.IDFRAME
+                if not self._id_clock:
+                    self._id_clock = self.now
                 self._tx = self.phy.transmit(encoded, leader, self.trailer_ms)
                 if self.drive != 1.0:
                     self._tx = np.round(self._tx * self.drive).astype(np.int16)
@@ -229,6 +257,8 @@ class ArqStation:
             self._tx_pos += k
             if self._tx_pos >= len(self._tx):
                 self._tx = None
+                if self._tx_is_id:
+                    self._id_clock = 0.0
                 if not self._txq:
                     self.ptt = False
                     self._event("PTT FALSE")
@@ -317,6 +347,9 @@ class ArqStation:
             self._fec_id_pending = False
             self.send_id(self.mycall)
             return
+        if self._fec_sent and self._fec_repeated >= self.fec_repeats and self._id_due():
+            self.send_id(self.mycall)
+            return
         if self._fec_sent and self._fec_repeated < self.fec_repeats:
             self._fec_repeated += 1
             self._txq.append(self._last)
@@ -398,7 +431,13 @@ class ArqStation:
             self.rpt = False
             self.state = "DISC"
             self._reset_connection()
-        if self.final_id_at and self.now > self.final_id_at and not self.keyed:
+        if self.state == "DISC" and self._id_due() and not self.keyed and not self.phy.busy() \
+                and not self.busy.busy and not self.ping_repeats:
+            self.send_id(self.mycall)
+        elif self.state in ("ISS", "IDLE") and self._id_due() and not self.keyed and not self.phy.busy() \
+                and self.rpt:
+            self._queue_id()                             # ahead of the next repeat
+        if self.final_id_at and self.now > self.final_id_at and not self.keyed and not self.busy.busy:
             self.final_id_at = 0.0
             self.send_id(self._final_id or self.mycall)
 
@@ -480,6 +519,8 @@ class ArqStation:
             return
         if self._check_disconnect():
             return
+        if self._id_due():
+            self._queue_id()
         if self.outq:
             t, n = self._next_frame()
             self.inflight = n
@@ -544,7 +585,8 @@ class ArqStation:
         if self.state == "DISC":
             accept = d.session == 0xFF or (t == codec.DISC and d.session == self.last_session)
         else:
-            accept = not expected or d.session in expected or (t in CONREQ_CODES and d.session == 0xFF)
+            accept = (not expected or d.session in expected or t == codec.IDFRAME
+                      or (t in CONREQ_CODES and d.session == 0xFF))
         self.trace.append((round(self.now), d.name, ok, d.session, accept, self.state, self.sub))
         if not accept:
             return
@@ -646,6 +688,13 @@ class ArqStation:
             if d.extra.get("target", "").upper() != self.mycall:
                 self._event("CANCELPENDING")
                 return
+            if self.busy_block and self.busy.blocks_connection(d.start * 1000 / codec.SAMPLE_RATE):
+                self.busy.clear(self.now)
+                self._reply(modulate.encode_control(
+                    codec.CONREJBUSY, codec.session_id(d.extra["caller"].upper(), d.extra["target"].upper())))
+                self._event(f"REJECTEDBUSY {d.extra.get('caller')}")
+                self._event(f"STATUS ARQ CONNECTION REQUEST FROM {d.extra.get('caller')} REJECTED, CHANNEL BUSY.")
+                return
             self._answer_conreq(t, d)
             return
 
@@ -691,7 +740,7 @@ class ArqStation:
                     self.rpt = False
                     if self._check_disconnect():
                         return
-                    if (self.autobreak and self.outq) or self.break_cmd:
+                    if (self.autobreak and self.outq) or self.break_cmd or self._id_due():
                         self._go_irs_to_iss()
                     else:
                         self._timeout_trip = self.now

@@ -55,6 +55,7 @@ class Phy:
         self.rx = Receiver(sessions)
         self._down = Resampler(FS, fs)                           # leg -> 12 kHz
         self._buf = np.zeros(0)
+        self.recent = np.zeros(0)                                # last 1024 samples at 12 kHz (busy detector)
         self._offset = 0                                         # absolute 12 kHz index of _buf[0]
         self._scan = 0                                           # where the next search starts, within _buf
         self._need = 0                                           # buffer length a pending frame needs
@@ -76,7 +77,9 @@ class Phy:
         return np.clip(np.round(y), -32768, 32767).astype(np.int16)
 
     def feed(self, samples: np.ndarray) -> list[Decoded]:
-        self._buf = np.concatenate((self._buf, self._down.process(np.asarray(samples, dtype=float))))
+        new = self._down.process(np.asarray(samples, dtype=float))
+        self.recent = np.concatenate((self.recent, new))[-1024:]
+        self._buf = np.concatenate((self._buf, new))
         out: list[Decoded] = []
         while len(self._buf) >= self._need:
             self._need = 0

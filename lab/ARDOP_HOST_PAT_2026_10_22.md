@@ -88,3 +88,19 @@ mode ("Not from mode FEC"). Memory ARQ (whole carriers) combines the repeats.
 | ardopcf -> ham-modem | intact, 62 s | intact, 41 s |
 
 Offline (tests/test_ardop_fec.py): one sender, two listeners; 4% block loss with 2 repeats; host commands and tags.
+
+## Busy detection, BUSYBLOCK and the 10-minute ID
+
+* `hammodem/ardop/busy.py` ports ardopcf's BusyDetect3 (FFT of the last 1024 samples every 100 ms while idle in DISC;
+  narrow/wide peak-to-baseline ratios against the BUSYDET threshold; 3 hits to trip, 5 s hold). Host gets
+  `BUSY TRUE` / `BUSY FALSE`; `BUSYDET 0-10` sets the level (0 off). ardopcf's "slow average" is a function-local, so
+  its ratio is in effect 0.2x; that is reproduced so BUSYDET means the same thing.
+* `BUSYBLOCK TRUE`: a connection request that arrives into a busy channel (or within 600 ms of it clearing) is
+  answered with ConRejBusy (`REJECTEDBUSY <call>` on both ends), as ardopcf. The final ID after a session waits for
+  the channel to be free.
+* 10-minute ID (ID after 9 minutes of transmitting since the last ID, `ID_DUE_MS`): in DISC when the channel is free,
+  in ISS/IDLE ahead of the next frame or repeat, as IRS by BREAKing at the next IDLE, in FEC between frames. ID frames
+  are now accepted inside a session whatever the session ID.
+* Tests: tests/test_ardop_busy.py (carrier trips and holds, BUSYDET 0, rejection of a call into a busy channel, ID
+  during a session with the interval shortened). Live regression against ardopcf, 1000 B + 500 B, both callers: intact.
+  The 10-minute interval itself was not run live (would need a 10-minute session).

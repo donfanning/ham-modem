@@ -351,7 +351,19 @@ class HostServer:
             fault = self._flag(cmd, arg)
             st.fm600 = self.settings["USE600MODES"] == "TRUE"
             return fault
-        elif cmd in ("CODEC", "BUSYBLOCK", "CWID", "ENABLEPINGACK", "MONITOR", "FSKONLY", "NEGOTIATEBW",
+        elif cmd == "BUSYBLOCK":
+            fault = self._flag(cmd, arg)
+            st.busy_block = self.settings["BUSYBLOCK"] == "TRUE"
+            return fault
+        elif cmd == "BUSYDET":
+            if not arg:
+                self.reply(f"BUSYDET {st.busy.level}")
+            elif arg.isdigit() and int(arg) <= 10:
+                st.busy.level = int(arg)
+                self.reply(f"BUSYDET now {arg}")
+            else:
+                return f"Syntax Err: BUSYDET {arg}"
+        elif cmd in ("CODEC", "CWID", "ENABLEPINGACK", "MONITOR", "FSKONLY", "NEGOTIATEBW",
                      "CMDTRACE", "DEBUGLOG"):
             return self._flag(cmd, arg)
         elif cmd in self.settings:                       # accepted for compatibility, no effect here
