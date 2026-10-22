@@ -23,13 +23,14 @@ import numpy as np
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", type=int, default=7300)
+    ap.add_argument("--bind", default="0.0.0.0", help="address to listen on (e.g. the lab network's gateway)")
     ap.add_argument("--rate", type=int, default=8000)
     ap.add_argument("--monitor", metavar="HOST:PORT")
     ap.add_argument("--loss", type=float, default=0.0)
     args = ap.parse_args()
     n = args.rate // 50
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(("0.0.0.0", args.port))
+    sock.bind((args.bind, args.port))
     sock.setblocking(False)
     monitor = None
     if args.monitor:

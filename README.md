@@ -25,6 +25,7 @@ Design, research notes and phases: [docs/PLAN.md](docs/PLAN.md).
 | Loss resilience: erasure-aware FX.25 decoding (RTP concealment -> RS erasures) and `--repeat N` time diversity | done; 9600 FX.25/32 at 3% loss 55 -> 59/60, 57.6k at 5% loss 85% -> 100% ([lab note](lab/LOSS_RESILIENCE_2026_10_21.md)) |
 | IL2P (`--il2p on|max`; receive always on for AFSK/G3RUH) | done; interoperates with Direwolf 1.7 both ways incl. RS repair; for loss, prefer FX.25 ([lab note](lab/IL2P_2026_10_21.md)) |
 | Passband QAM 38.4k / 51.2k on 16 kHz legs (`--modem qam38400` / `qam51200`, room 7316) | done; live 48/48 in the 16 kHz room ([lab note](lab/QAM_2026_10_21.md)) |
+| Third-party software: Direwolf 1.7 as a live digipeater/beacon peer + Direwolf `kissutil` on our KISS-TCP, all in lab-network containers (`lab/realapps_test.sh`) | passes ([lab note](lab/REALAPPS_2026_10_22.md)) |
 | CSMA/CD for rooms (`--collision-detect`) | done, opt-in |
 
 ## Try it
