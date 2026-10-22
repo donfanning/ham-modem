@@ -137,7 +137,7 @@ Phases 0–7 are done, and so is everything below; details are in the dated note
 
 Phases are ordered by value. The first is a prerequisite for every HF protocol after it.
 
-8. **HF channel simulator** *(prerequisite for all HF work)*. Over pure VoIP the channel is clean. HF modes matter for remote-HF gateways (a VoIP leg bridged to a real HF radio) and for interop with HF BBS and messaging networks, so they must be measured on realistic channels:
+8. **HF channel simulator** *(done 2026-10-22: `hammodem/hfchannel.py`, [lab note](../lab/HF_CHANNEL_2026_10_22.md))*. Over pure VoIP the channel is clean. HF modes matter for remote-HF gateways (a VoIP leg bridged to a real HF radio) and for interop with HF BBS and messaging networks, so they must be measured on realistic channels:
    - a Watterson / CCIR 520 (ITU-R F.1487) two-path fading model: good, moderate and poor channels, with Doppler spread, multipath delay, AWGN at a set SNR, frequency offset, and impulse noise;
    - available both offline (`tests/impair.py`, WAV tools) and live (an audio-hub mode that impairs the mix).
 9. **Open HF/VHF modes that reuse what exists** (small):

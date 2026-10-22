@@ -27,7 +27,7 @@ from ..fx25 import Fx25Receiver
 from ..fx25 import burst_bits as fx25_burst_bits
 from .afsk import _Fir
 from .g3ruh import Scrambler, _dedupe
-from .hdlc import HdlcDecoder
+from .hdlc import HdlcDecoder, track_burst
 
 RS = 6400                       # symbols/s
 SPS = 10                        # internal samples per symbol
@@ -202,6 +202,7 @@ class QamDemodulator:
         return out
 
     def _feed(self, pcm: np.ndarray) -> list[bytes]:
+        track_burst(self)
         x = np.asarray(pcm, dtype=np.float64) / 32768.0
         level = 10 * np.log10(np.mean(x * x) * 2 + 1e-12) if len(x) else -120.0
         self.loud = level > self.SQUELCH_DBFS

@@ -25,7 +25,7 @@ from ..fx25 import Fx25Receiver
 from ..fx25 import burst_bits as fx25_burst_bits
 from ..il2p import Il2pReceiver
 from ..il2p import burst_levels as il2p_burst_levels
-from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, extend_bits, span_mask
+from .hdlc import DEDUPE_NEAR_BITS, HdlcDecoder, NrziDecoder, NrziEncoder, extend_bits, span_mask, track_burst
 
 
 @dataclass(frozen=True)
@@ -170,6 +170,7 @@ class AfskDemodulator:
         self._n = 0
         self.slicers = [_Slicer(10 ** (db / 20)) for db in profile.twist_db]
         self._recent: dict[bytes, int] = {}
+        self._dedupe_samples = max(fs, int(DEDUPE_NEAR_BITS * fs / profile.baud) // 2)
         self.samples = 0
         self.frames = 0
 
@@ -186,6 +187,7 @@ class AfskDemodulator:
         """``erased``: these samples conceal lost packets (bits from them become FX.25 erasures)."""
         if isinstance(pcm, (bytes, bytearray, memoryview)):
             pcm = np.frombuffer(pcm, dtype="<i2")
+        track_burst(self)
         if erased:
             self._spans.append((self.samples, self.samples + len(pcm) + self._erase_delay))
         self._spans = [sp for sp in self._spans if sp[1] > self.samples]
@@ -205,17 +207,18 @@ class AfskDemodulator:
             self._run(s, d.tolist(), base, out)
         self.samples += len(x)
         if len(self._recent) > 64:
-            horizon = self.samples - self.fs * 2
-            self._recent = {k: v for k, v in self._recent.items() if v > horizon}
+            horizon = self.samples - 2 * self._dedupe_samples
+            self._recent = {k: v for k, v in self._recent.items() if v[0] > horizon}
         return out
 
     def _emit(self, frame: bytes, when: int, out: list[bytes]) -> None:
         """Report a frame once, whichever slicer -- or the plain/FX.25 path -- decoded it first."""
         seen = self._recent.get(frame)
-        if seen is None or when - seen > self.fs:
+        burst = getattr(self, "_burst", 0)
+        if seen is None or (seen[1] != burst and when - seen[0] > self._dedupe_samples):
             out.append(frame)
             self.frames += 1
-        self._recent[frame] = when
+        self._recent[frame] = (when, burst)
 
     @property
     def fx25_corrected(self) -> int:

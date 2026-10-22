@@ -12,10 +12,12 @@ incoming block with that probability (silence in its place, no concealment), lik
 
 import argparse
 import random
+import sys
 import select
 import socket
 import time
 from collections import deque
+from pathlib import Path
 
 import numpy as np
 
@@ -27,6 +29,8 @@ def main() -> None:
     ap.add_argument("--rate", type=int, default=8000)
     ap.add_argument("--monitor", metavar="HOST:PORT")
     ap.add_argument("--loss", type=float, default=0.0)
+    ap.add_argument("--hf", metavar="PRESET", help="HF channel simulator on every talker's path (see hfchannel.py)")
+    ap.add_argument("--snr", type=float, help="with --hf: noise in 3 kHz relative to -20 dBFS signals")
     args = ap.parse_args()
     n = args.rate // 50
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -37,8 +41,13 @@ def main() -> None:
         host, _, port = args.monitor.rpartition(":")
         monitor = (host, int(port))
     queues: dict[tuple, deque] = {}
+    paths: dict[tuple, object] = {}
+    if args.hf:
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from hammodem.hfchannel import HfChannel  # noqa: PLC0415
     last_heard: dict[tuple, float] = {}
     rng = random.Random()
+    rng_np = np.random.default_rng()
     next_tick = time.monotonic()
     print(f"hub on udp:{args.port}, {args.rate} Hz", flush=True)
     while True:
@@ -56,6 +65,10 @@ def main() -> None:
                 block = np.frombuffer(data[:2 * n], "<i2").astype(np.int32)
                 if args.loss and rng.random() < args.loss:
                     block = np.zeros(n, np.int32)
+                if args.hf:
+                    if addr not in paths:                    # each talker gets its own fading path
+                        paths[addr] = HfChannel(args.rate, args.hf, None)
+                    block = np.round(paths[addr].process(np.pad(block, (0, n - len(block))))).astype(np.int32)
                 queues[addr].append(np.pad(block, (0, n - len(block))))
         now = time.monotonic()
         if now < next_tick:
@@ -67,7 +80,11 @@ def main() -> None:
         latest = {a: (q.popleft() if q else np.zeros(n, np.int32)) for a, q in queues.items()}
         total = sum(latest.values(), np.zeros(n, np.int32))
         for addr, own in latest.items():
-            sock.sendto(np.clip(total - own, -32768, 32767).astype("<i2").tobytes(), addr)
+            mix = total - own
+            if args.hf and args.snr is not None:             # receiver noise, calibrated to -20 dBFS signals
+                var = 10 ** (-20 / 10) * 32767 ** 2 / 10 ** (args.snr / 10) * (args.rate / 2) / 3000
+                mix = mix + rng_np.normal(0, var ** 0.5, n)
+            sock.sendto(np.clip(mix, -32768, 32767).astype("<i2").tobytes(), addr)
         if monitor:
             sock.sendto(np.clip(total, -32768, 32767).astype("<i2").tobytes(), monitor)
 

@@ -8,6 +8,19 @@ byte first. The receiver and ``crc16_hdlc`` are slimmed from El-Modem (``v42_lap
 from __future__ import annotations
 
 FLAG = 0x7E
+# Duplicate suppression: a frame decoded twice (plain + FX.25 path, slicer bank, --repeat copies) is reported
+# once if both copies fall in the same burst (DCD rising edge to rising edge) or within DEDUPE_NEAR_BITS of each
+# other. Protocol retransmissions (SABM/DISC/RR retries after T1) always come in a new burst, so they get through
+# -- a pure time window long enough for 300 bd FX.25 swallowed them and stalled connected mode.
+DEDUPE_NEAR_BITS = 2048
+
+
+def track_burst(dem) -> None:
+    """Count DCD rising edges on a demodulator (call once per input block)."""
+    busy = dem.dcd
+    if busy and not getattr(dem, "_was_busy", False):
+        dem._burst = getattr(dem, "_burst", 0) + 1
+    dem._was_busy = busy
 FLAG_BITS = (0, 1, 1, 1, 1, 1, 1, 0)
 MIN_FRAME = 15                             # two 7-octet addresses + control (FCS not counted)
 MAX_FRAME = 2048

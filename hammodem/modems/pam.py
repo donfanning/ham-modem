@@ -29,7 +29,7 @@ from .afsk import _Fir, lowpass_taps
 from .g3ruh import ERASE_TAIL, Scrambler, _dedupe, raised_cosine
 from ..fx25 import Fx25Receiver
 from ..fx25 import burst_bits as fx25_burst_bits
-from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, extend_bits, span_mask
+from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, extend_bits, span_mask, track_burst
 
 SPS = 5
 SQUELCH = 0.01                               # unit amplitude below which the loops hold (digital silence)
@@ -130,6 +130,7 @@ class PamDemodulator:
         if isinstance(pcm, (bytes, bytearray, memoryview)):
             pcm = np.frombuffer(pcm, dtype="<i2")
         n_int = len(pcm) * self.interp
+        track_burst(self)
         if erased:
             self._spans.append((self._abs, self._abs + n_int + self._erase_delay))
         self._abs += n_int

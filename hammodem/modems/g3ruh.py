@@ -24,7 +24,7 @@ from ..fx25 import Fx25Receiver
 from ..fx25 import burst_bits as fx25_burst_bits
 from ..il2p import Il2pReceiver
 from ..il2p import burst_levels as il2p_burst_levels
-from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, extend_bits, span_mask
+from .hdlc import DEDUPE_NEAR_BITS, HdlcDecoder, NrziDecoder, NrziEncoder, extend_bits, span_mask, track_burst
 
 ERASE_TAIL = 18                         # NRZI (1) + descrambler taps (17): how far one bad line bit reaches
 
@@ -56,17 +56,18 @@ def raised_cosine(beta: float, span: int, sps: int) -> np.ndarray:
 
 
 def _dedupe(dem, frames: list[bytes], nbits: int) -> list[bytes]:
-    """Drop a frame decoded twice (plain HDLC and FX.25 both see an FX.25 frame) within ~2 frame lengths."""
+    """Report a frame once per burst (see hdlc.DEDUPE_NEAR_BITS); retransmissions in a new burst get through."""
     out = []
+    burst = getattr(dem, "_burst", 0)
     for f in frames:
         seen = dem._recent.get(f)
-        if seen is None or dem._bits_seen - seen > 8 * 4096:
+        if seen is None or (seen[1] != burst and dem._bits_seen - seen[0] > DEDUPE_NEAR_BITS):
             out.append(f)
             dem.frames += 1
-        dem._recent[f] = dem._bits_seen
+        dem._recent[f] = (dem._bits_seen, burst)
     dem._bits_seen += nbits
     if len(dem._recent) > 64:
-        dem._recent = {k: v for k, v in dem._recent.items() if dem._bits_seen - v < 8 * 4096}
+        dem._recent = {k: v for k, v in dem._recent.items() if v[1] >= burst - 1}
     return out
 
 
@@ -173,6 +174,7 @@ class G3ruhDemodulator:
         if isinstance(pcm, (bytes, bytearray, memoryview)):
             pcm = np.frombuffer(pcm, dtype="<i2")
         n_int = len(pcm) * self.interp
+        track_burst(self)
         if erased:
             self._spans.append((self._abs, self._abs + n_int + self._erase_delay))
         self._spans = [sp for sp in self._spans if sp[1] > self._abs]

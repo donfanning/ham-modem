@@ -115,5 +115,20 @@ class Fx25FramingTest(unittest.TestCase):
         self.assertIsNone(fx25.encode_bits(ui(250), 16))
 
 
+class Fx25ModemDedupeTest(unittest.TestCase):
+    def test_each_fx25_frame_delivered_once_at_300_bd(self):
+        # At 300 bd the FX.25 copy decodes > 1 s after the embedded plain copy; both must collapse to one.
+        import numpy as np
+        from hammodem.modems import make
+        mod, dem = make("afsk300", 8000)
+        mod.fx25 = 32
+        fs = [ui(40 + i) for i in range(3)]
+        audio = np.concatenate([np.concatenate((mod.modulate([f], 0.2), np.zeros(4000, np.int16))) for f in fs])
+        got = []
+        for i in range(0, len(audio), 160):
+            got += dem.feed(audio[i:i + 160])
+        self.assertEqual(got, fs)
+
+
 if __name__ == "__main__":
     unittest.main()
