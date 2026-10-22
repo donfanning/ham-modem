@@ -24,6 +24,7 @@ Design, research notes and phases: [docs/PLAN.md](docs/PLAN.md).
 | FX.25 FEC (`--fx25 16/32/64`; receive always on), Direwolf-compatible | done; interop both ways under damage; 1200 bd at 3% loss: 50% -> 96.7% ([lab note](lab/FX25_2026_10_21.md)) |
 | Loss resilience: erasure-aware FX.25 decoding (RTP concealment -> RS erasures) and `--repeat N` time diversity | done; 9600 FX.25/32 at 3% loss 55 -> 59/60, 57.6k at 5% loss 85% -> 100% ([lab note](lab/LOSS_RESILIENCE_2026_10_21.md)) |
 | IL2P (`--il2p on|max`; receive always on for AFSK/G3RUH) | done; interoperates with Direwolf 1.7 both ways incl. RS repair; for loss, prefer FX.25 ([lab note](lab/IL2P_2026_10_21.md)) |
+| Passband QAM 38.4k / 51.2k on 16 kHz legs (`--modem qam38400` / `qam51200`, room 7316) | done; live 48/48 in the 16 kHz room ([lab note](lab/QAM_2026_10_21.md)) |
 | CSMA/CD for rooms (`--collision-detect`) | done, opt-in |
 
 ## Try it
@@ -44,6 +45,7 @@ and type `C K1ABC` at the `cmd:` prompt. AGWPE clients: `--agw 8000`.
 9600 bd: `--modem g3ruh9600 --sip-dial 7316@172.31.73.10` (16 kHz room; 8 kHz G.711 legs are refused).
 19200/38400 bd: `--modem g3ruh19200 --sip-dial 7348@172.31.73.10` (48 kHz room, L16/48000).
 57.6 kbit/s: `--modem pam57600 --sip-dial 7348@172.31.73.10` (VoIP-only waveform; same KISS/TNC-2/AGW interfaces).
+51.2 kbit/s on ordinary 16 kHz legs: `--modem qam51200 --sip-dial 7316@172.31.73.10 --txdelay 20`.
 
 Point-to-point (no PBX): one station runs `--sip-listen --sip-port 5070`, the other `--sip-dial x@HOST:5070`.
 
