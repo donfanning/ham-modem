@@ -161,11 +161,11 @@ Phases are ordered by value. The first is a prerequisite for every HF protocol a
       mode passes 8 kHz G.711) done too; still open: better 16QAM.2000 noise margin)*.
     - 10.3 ARQ session layer (ConReq/ConAck timing, even/odd data, ACK/NAK quality, BREAK/IDLE/DISC/END, gear
       shifting) *(done 2026-10-22, [lab note](../lab/ARDOP_ARQ_2026_10_22.md): live sessions both ways with
-      ardopcf at 500 and 2000 Hz; still open: FEC mode, summation memory ARQ, 10-minute ID, BUSY detection)*.
+      ardopcf at 500 and 2000 Hz; FEC mode done (see 10.4); still open: summation memory ARQ, 10-minute ID, BUSY detection)*.
     - 10.4 Winlink host interface (TCP 8515 commands / 8516 data) on our audio legs; test with Pat. *(done
       2026-10-22, [lab note](../lab/ARDOP_HOST_PAT_2026_10_22.md): `ham-modem --modem ardop`; Pat 1.0.0 P2P
       through ham-modem <-> ardopcf delivers messages both ways; across ConfBridge room 7300 at 8 kHz G.711 too;
-      RTP loss 1-5% survives (lab note); still open: FEC mode, IAX2 and third-station runs.)*
+      RTP loss 1-5% survives (lab note); FEC mode done, live against ardopcf both ways; still open: IAX2 and third-station runs.)*
 11. **FreeDATA / codec2 OFDM data modes** (medium): wrap libcodec2 (LGPL) for the `datac*` modes rather than reimplement them, and add FreeDATA's ARQ/session layer if wanted.
 12. **Legacy HF ARQ modes** (medium): **PACTOR-I** (FSK 100/200 bd, memory-ARQ, Huffman), **AMTOR/SITOR-A/B** (CCIR 476/625) and **G-TOR** (Golay coding; Kantronics' DCC paper). All are published, and give legacy BBS interop.
 13. **Published military HF standards** (large, optional): **STANAG 4285** and **MIL-STD-188-110A/B** serial-tone PSK, with **STANAG 5066** as the data-link layer. They are robust HF waveforms with public specifications.

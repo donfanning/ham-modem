@@ -43,6 +43,8 @@ SHIFT_UP = {200: (82, 84, 84, 85, 0), 500: (80, 84, 84, 75, 79, 0), 1000: (80, 8
             2000: (80, 80, 80, 76, 85, 75, 0)}
 SHIFT_UP_FM2000 = (60, 85, 85, 0)
 
+FRAME_BY_NAME = {f.name: t for t, f in codec.FRAMES.items()}
+FEC_PAUSE_MS = 400            # gap between FEC frames and between a frame and its repeats
 CONREQ_CODES = set(codec.CONREQ.values())
 CONACK_CODES = {v: k for k, v in codec.CONACK.items()}
 REPLY_DELAY_MS = 250          # ardopcf waits this long after a decode before answering
@@ -110,6 +112,13 @@ class ArqStation:
         self.final_id_at = 0.0
         self._final_id = ""
         self.ping_target, self.ping_repeats = "", 0
+        # FEC (broadcast) mode
+        self.protocol_mode = "ARQ"
+        self.fec_mode, self.fec_repeats, self.fec_id = "4FSK.500.100", 0, False
+        self._fec_type = self._fec_sent = self._fec_repeated = 0
+        self._fec_id_pending = False
+        self._fec_last_ok: tuple[int, int] | None = None   # (frame type, CRC) of the last frame passed up
+        self._fec_failed: tuple[int, bytes] | None = None
 
     # ================================================================== host interface
 
@@ -162,6 +171,24 @@ class ArqStation:
             self.rpt = True
             self._send(modulate.encode_ping(self.mycall, self.ping_target))
 
+    def fec_start(self) -> bool:
+        """FECSEND TRUE: broadcast the queued data (ardopcf StartFEC); False when there is nothing to send."""
+        if self.state == "FECSEND":
+            return True
+        if not self.outq or self.fec_mode + ".E" not in FRAME_BY_NAME:
+            return False
+        self._fec_sent = self._fec_repeated = 0
+        self._fec_id_pending = self.fec_id
+        self._set_state("FECSEND")
+        self.next_play = self.now
+        return True
+
+    def fec_abort(self) -> None:
+        if self.state == "FECSEND":
+            self._txq.clear()
+            self._clear_outq()
+            self._set_state("DISC")
+
     def send_id(self, call: str | None = None) -> None:
         self._send(modulate.encode_idframe(call or self.mycall, self.grid), self.leader_ms)
 
@@ -206,7 +233,9 @@ class ArqStation:
                     self.ptt = False
                     self._event("PTT FALSE")
                     self._tx_end = self.now
-                    if self.rpt or self.disc_repeating:
+                    if self.state == "FECSEND":
+                        self.next_play = self.now + FEC_PAUSE_MS
+                    elif self.rpt or self.disc_repeating:
                         self.next_play = self.now + self.repeat_interval
         return out
 
@@ -282,7 +311,60 @@ class ArqStation:
 
     # ================================================================== timers (ardopcf CheckTimers)
 
+    def _fec_step(self) -> None:
+        """ardopcf GetNextFECFrame: the next new frame, or a repeat of the last one (400 ms apart)."""
+        if self._fec_id_pending:
+            self._fec_id_pending = False
+            self.send_id(self.mycall)
+            return
+        if self._fec_sent and self._fec_repeated < self.fec_repeats:
+            self._fec_repeated += 1
+            self._txq.append(self._last)
+            return
+        if not self.outq:
+            self._set_state("DISC")
+            return
+        if self._fec_sent:
+            self._fec_type ^= 1
+        else:
+            self._fec_type = FRAME_BY_NAME[self.fec_mode + ".E"]
+        n = min(frame_size(self._fec_type), len(self.outq))
+        chunk = bytes(self.outq[:n])
+        del self.outq[:n]
+        self._event(f"BUFFER {len(self.outq)}")
+        self._fec_sent += 1
+        self._fec_repeated = 0
+        self._send(modulate.encode_fsk_data(self._fec_type, chunk, 0xFF))
+
+    def _fec_receive(self, t: int, d: Decoded, ok: bool, data: bytes) -> None:
+        """ardopcf ProcessRcvdFECDataFrame: good frames go up as FEC (repeats dropped), the last bad one as ERR."""
+        if ok:
+            self._mem_type, self._mem_blocks = -1, []
+            key = (t, codec.crc16(data))
+            if key == self._fec_last_ok:
+                return
+            if self._fec_failed and self._fec_failed[0] != t:
+                self._fec_flush_failed()
+            self._fec_last_ok = key
+            self._fec_failed = None
+            if self.on_data:
+                self.on_data("FEC", data)
+        else:
+            if self._fec_failed and self._fec_failed[0] != t:
+                self._fec_flush_failed()
+            if data:
+                self._fec_failed = (t, data)
+
+    def _fec_flush_failed(self) -> None:
+        if self._fec_failed and self.on_data:
+            self.on_data("ERR", self._fec_failed[1])
+        self._fec_failed = None
+
     def _timers(self) -> None:
+        if self.state == "FECSEND":
+            if not self.keyed and not self.phy.busy() and self.now >= self.next_play:
+                self._fec_step()
+            return
         if (self.rpt or self.disc_repeating) and not self.keyed and self.now > self.next_play \
                 and not self.phy.busy():
             if self._next_arq_frame():
@@ -467,6 +549,11 @@ class ArqStation:
         if not accept:
             return
         self._last_heard = self.now
+        if self.state == "FECSEND":
+            return
+        if self.protocol_mode == "FEC" and self.state == "DISC" and is_data(t) and d.session == 0xFF:
+            self._fec_receive(t, d, ok, data or b"")
+            return
         if self.disc_repeating and ok and t == codec.END and self.state != "DISC":
             self._end_session(False, True, f"STATUS ARQ CONNECTION ENDED WITH {self.remote}")
             return

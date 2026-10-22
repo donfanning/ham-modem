@@ -85,3 +85,5 @@ def run(station: ArqStation, audio, host: str, port: int) -> None:
         server.close()
         audio.close()
         log.info("stats: %s; modes sent %s", station.stats, station.modes_used)
+        for row in station.trace:
+            log.debug("heard %s", row)

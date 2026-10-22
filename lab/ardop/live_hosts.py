@@ -30,6 +30,7 @@ class Host:
         self.c.setblocking(False)
         self.d.setblocking(False)
         self.lines, self.rx, self._cb, self._db = [], bytearray(), b"", b""
+        self.tags = {}                                    # data-port tag -> bytes (ARQ, FEC, ERR, IDF)
 
     def cmd(self, text):
         self.c.sendall(text.encode() + b"\r")
@@ -60,6 +61,7 @@ class Host:
                     frame, self._db = self._db[2:2 + n], self._db[2 + n:]
                     if frame[:3] == b"ARQ":
                         self.rx += frame[3:]
+                    self.tags.setdefault(frame[:3].decode(errors="replace"), bytearray()).extend(frame[3:])
 
 
 def main():

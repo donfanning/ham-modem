@@ -73,3 +73,18 @@ filling would do better), both directions, 3 seeds per rate; time to deliver all
 | 5% | 123.9, 173.9, 95.6 | 7, 15, 8 |
 
 Data is always intact; loss costs time (a lost ACK or a lost frame costs a repeat), not the session.
+
+## FEC (broadcast) mode (lab/ardop/live_fec.py)
+
+`PROTOCOLMODE FEC`, `FECMODE <mode>`, `FECREPEATS 0-5`, `FECID`, `FECSEND TRUE|FALSE` as in ardopcf. Queued data goes
+out as unacknowledged data frames with session ID 0xFF (even/odd alternating), each repeated FECREPEATS times 400 ms
+apart; an optional ID frame goes first. Listeners in FEC mode pass good frames up tagged `FEC` (a repeat of the last
+good frame is dropped), the last undecodable one tagged `ERR`; ID frames come as `IDF`. `ARQCALL` is refused in FEC
+mode ("Not from mode FEC"). Memory ARQ (whole carriers) combines the repeats.
+
+| direction, 300 B, 1 repeat, ID on | 4FSK.500.100 | 4PSK.500.100 |
+|---|---|---|
+| ham-modem -> ardopcf | intact, 47 s | intact, 34 s |
+| ardopcf -> ham-modem | intact, 62 s | intact, 41 s |
+
+Offline (tests/test_ardop_fec.py): one sender, two listeners; 4% block loss with 2 repeats; host commands and tags.

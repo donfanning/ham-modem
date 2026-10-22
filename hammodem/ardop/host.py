@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import socket
 
-from .arq import ArqStation
+from .arq import FRAME_BY_NAME, ArqStation
 
 log = logging.getLogger("hammodem.ardop.host")
 
@@ -254,15 +254,55 @@ class HostServer:
                 self.reply(f"DRIVELEVEL now {round(st.drive * 100)}")
         elif cmd == "PROTOCOLMODE":
             if not arg:
-                self.reply("PROTOCOLMODE ARQ")
-            elif arg.upper() == "ARQ":
-                self.reply("PROTOCOLMODE now ARQ")
+                self.reply(f"PROTOCOLMODE {st.protocol_mode}")
+            elif arg.upper() in ("ARQ", "FEC"):
+                st.protocol_mode = arg.upper()
+                self.reply(f"PROTOCOLMODE now {st.protocol_mode}")
+                st.abort()                                   # ardopcf: any protocol mode change goes to DISC
             else:
-                return f"PROTOCOLMODE {arg.upper()} not supported (ARQ only)"
+                return f"PROTOCOLMODE {arg.upper()} not supported (ARQ and FEC only)"
+        elif cmd == "FECMODE":
+            if not arg:
+                self.reply(f"FECMODE {st.fec_mode}")
+            elif arg + ".E" in FRAME_BY_NAME:
+                st.fec_mode = arg
+                self.reply(f"FECMODE now {arg}")
+            else:
+                return f"Syntax Err: FECMODE {arg}"
+        elif cmd == "FECREPEATS":
+            if not arg:
+                self.reply(f"FECREPEATS {st.fec_repeats}")
+            elif arg.isdigit() and int(arg) <= 5:
+                st.fec_repeats = int(arg)
+                self.reply(f"FECREPEATS now {arg}")
+            else:
+                return f"Syntax Err: FECREPEATS {arg}"
+        elif cmd == "FECID":
+            if not arg:
+                self.reply(f"FECID {str(st.fec_id).upper()}")
+            elif arg.upper() in ("TRUE", "FALSE"):
+                st.fec_id = arg.upper() == "TRUE"
+                self.reply(f"FECID now {arg.upper()}")
+            else:
+                return f"Syntax Err: FECID {arg}"
+        elif cmd == "FECSEND":
+            if arg.upper() == "TRUE":
+                if not st.mycall:
+                    return "MYCALL not set"
+                if not st.fec_start():
+                    return "StartFEC failed for FECSEND TRUE."
+                self.reply("FECSEND now TRUE")
+            elif arg.upper() == "FALSE":
+                st.fec_abort()
+                self.reply("FECSEND now FALSE")
+            else:
+                return f"Syntax Err: FECSEND {arg}".rstrip()
         elif cmd == "ARQCALL":
             parts = arg.split()
             if len(parts) != 2 or not parts[1].isdigit():
                 return f"Syntax Err: {line}"
+            if st.protocol_mode == "FEC":
+                return "Not from mode FEC"
             if st.state != "DISC":
                 return f"Not from state {st.state}"
             st.conreq_repeats = max(2, min(15, int(parts[1])))
@@ -322,7 +362,7 @@ class HostServer:
                 self.reply(f"{cmd} now {arg}")
         elif cmd in ("CAPTUREDEVICES", "PLAYBACKDEVICES"):
             self.reply(f"{cmd} voip")
-        elif cmd in ("FECMODE", "FECSEND", "FECREPEATS", "FECID", "TWOTONETEST", "TXFRAME", "DATATOSEND"):
+        elif cmd in ("TWOTONETEST", "TXFRAME", "DATATOSEND"):
             return f"{cmd} not supported"
         else:
             return f"CMD {cmd} not recoginized"                # (sic: ardopcf's spelling)
