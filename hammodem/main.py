@@ -17,6 +17,7 @@ import signal
 import socket
 import time
 
+from .agw import AgwServer
 from .kiss_tcp import KissTcpServer
 from .modems.afsk import PROFILES
 from .serial import DeviceSerial, PtySerial
@@ -45,7 +46,11 @@ class Runtime:
         self.tnc, self.audio = tnc, audio
         self.tap = tap
         self._tap_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) if tap else None
-        self.links = [(s, tnc.attach(s.write, s.name)) for s in serials]
+        self.links = []
+        for s in serials:
+            mode, mycall = getattr(s, "tnc_mode", ("kiss", None))
+            ep = tnc.attach_tnc2(s.write, s.name, mycall or "NOCALL") if mode == "tnc2" else tnc.attach(s.write, s.name)
+            self.links.append((s, ep))
         self.servers = list(servers)
         self.running = True
         self._dcd = None
@@ -87,6 +92,7 @@ class Runtime:
                 log.warning("audio clock slipped %.0f ms; resyncing", (now - next_tx) * 1000)
                 next_tx = now
             while now >= next_tx:
+                self.tnc.tick()
                 self.audio.send(self.tnc.audio_out(n))
                 next_tx += tick
             if self.tnc.dcd != self._dcd:
@@ -115,7 +121,13 @@ def main(argv: list[str] | None = None) -> None:
                     help="create a pty speaking KISS, symlinked at PATH (repeatable)")
     ap.add_argument("--serial", action="append", default=[], metavar="DEV[:BAUD]",
                     help="speak KISS on a real serial port, e.g. /dev/ttyUSB0:9600 (repeatable)")
+    ap.add_argument("--tnc2-pty", action="append", default=[], metavar="PATH",
+                    help="create a pty with a TNC-2 command interpreter (cmd: prompt), symlinked at PATH")
+    ap.add_argument("--tnc2-serial", action="append", default=[], metavar="DEV[:BAUD]",
+                    help="TNC-2 command interpreter on a real serial port")
+    ap.add_argument("--mycall", default="NOCALL", help="initial MYCALL for TNC-2 ports")
     ap.add_argument("--kiss-tcp", metavar="[HOST:]PORT", help="KISS-over-TCP server (Direwolf uses 8001)")
+    ap.add_argument("--agw", metavar="[HOST:]PORT", help="AGWPE TCP API server (usually 8000)")
     leg = ap.add_mutually_exclusive_group(required=True)
     leg.add_argument("--udp-audio", metavar="LPORT[:HOST:PORT]",
                      help="raw s16le PCM over UDP: listen on LPORT, send to HOST:PORT (or to whoever sends first)")
@@ -161,16 +173,26 @@ def main(argv: list[str] | None = None) -> None:
     for spec in args.serial:
         dev, _, baud = spec.partition(":")
         serials.append(DeviceSerial(dev, int(baud or 9600)))
+    tnc2 = [_pty(p) for p in args.tnc2_pty]
+    for spec in args.tnc2_serial:
+        dev, _, baud = spec.partition(":")
+        tnc2.append(DeviceSerial(dev, int(baud or 9600)))
+    for s in tnc2:
+        s.tnc_mode = ("tnc2", args.mycall)
+    serials += tnc2
     servers = [KissTcpServer(tnc, *_hostport(args.kiss_tcp))] if args.kiss_tcp else []
+    if args.agw:
+        servers.append(AgwServer(tnc, *_hostport(args.agw), description=f"{args.modem} over VoIP"))
 
     rt = Runtime(tnc, audio, serials, servers, tap=_hostport(args.audio_tap) if args.audio_tap else None)
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: setattr(rt, "running", False))
     log.info("%s at %d Hz; audio %s", args.modem, args.rate, audio.name)
     for s in serials:
-        log.info("KISS on %s%s", s.name, f" (link {s._link})" if getattr(s, "_link", None) else "")
+        log.info("%s on %s%s", getattr(s, "tnc_mode", ("KISS",))[0].upper(), s.name,
+                 f" (link {s._link})" if getattr(s, "_link", None) else "")
     for srv in servers:
-        log.info("KISS on %s", srv.name)
+        log.info("listening on %s", srv.name)
     gc.collect()
     gc.freeze()                                 # El-Modem: GC pauses starved the RTP sender; keep the heap small
     try:

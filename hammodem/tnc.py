@@ -8,6 +8,7 @@ KISS endpoint, like a hardware TNC in KISS mode with several host programs shari
 from __future__ import annotations
 
 import logging
+import time
 
 import numpy as np
 
@@ -38,12 +39,13 @@ class KissEndpoint:
 
 
 class Tnc:
-    def __init__(self, modem: str = "afsk1200", fs: int = 8000, **channel_args) -> None:
+    def __init__(self, modem: str = "afsk1200", fs: int = 8000, clock=time.monotonic, **channel_args) -> None:
         profile = PROFILES[modem]
         self.fs = fs
+        self.clock = clock                       # protocol timers (AX.25, beacons); tests pass simulated time
         self.demod = AfskDemodulator(profile, fs)
         self.channel = Channel(AfskModulator(profile, fs), fs, **channel_args)
-        self.endpoints: list[KissEndpoint] = []
+        self.endpoints: list = []                # KissEndpoint / Tnc2Terminal: deliver(frame), feed(bytes)
         self.monitor = None                     # callable(direction, frame_bytes) for logging/TUI
         self.heard = 0
 
@@ -52,7 +54,20 @@ class Tnc:
         self.endpoints.append(ep)
         return ep
 
-    def detach(self, ep: KissEndpoint) -> None:
+    def attach_tnc2(self, write, name: str = "", mycall: str = "NOCALL"):
+        from .tnc2 import Tnc2Terminal  # noqa: PLC0415 -- tnc2 imports this module's peers
+        term = Tnc2Terminal(self, write, name, mycall)
+        self.endpoints.append(term)
+        return term
+
+    def tick(self) -> None:
+        """Run per-port timers (AX.25 T1/T2/T3, beacons); called once per audio block."""
+        for ep in self.endpoints:
+            tick = getattr(ep, "tick", None)
+            if tick is not None:
+                tick()
+
+    def detach(self, ep) -> None:
         if ep in self.endpoints:
             self.endpoints.remove(ep)
 

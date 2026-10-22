@@ -15,7 +15,7 @@ Design, research notes and phases: [docs/PLAN.md](docs/PLAN.md).
 | HDLC / NRZI / FCS, AX.25 frame codec, KISS codec | done, unit-tested |
 | AFSK 1200 / 300 modulator + demodulator (slicer bank, PLL, DCD) | done; interoperates with Direwolf both ways ([lab note](lab/AFSK_BASELINE_2026_10_21.md)) |
 | CSMA channel (p-persist, DCD from timing quality + in-band energy), KISS pty / tty / TCP | done; live test through `tools/audio_hub.py` with Direwolf monitoring |
-| TNC-2 command mode, AX.25 connected mode, AGWPE | phase 4 |
+| AX.25 v2.0 connected mode (mod 8, REJ/poll recovery, digipeater paths), TNC-2 command mode (`--tnc2-pty`), AGWPE server (`--agw`) | done; live TNC-2 <-> AGWPE session through the ConfBridge ([lab note](lab/CONNECTED_MODE_2026_10_21.md)) |
 | SIP (dial / listen, digest), RTP (PCMU/PCMA/L16, loss concealment), Asterisk ConfBridge lab | **milestone 1 reached**: 3 stations in a ConfBridge, Direwolf monitoring ([lab note](lab/CONFBRIDGE_MILESTONE1_2026_10_21.md)) |
 | IAX2 leg | not yet (El-Modem's Rust `iax2` binding to port) |
 | G3RUH 9600 over L16/16 kHz | phase 6 |
@@ -31,6 +31,9 @@ export PYTHONPATH=$PWD
 .venv/bin/python -m hammodem.main --sip-dial 7300@172.31.73.10 --kiss-pty ~/.ham-modem1 -m &
 .venv/bin/python lab/confbridge_test.py --stations 3 --frames 10 [--loss 0.03]   # delivery matrix
 ```
+
+A dumb-terminal user: `--tnc2-pty ~/.ham-tnc2 --mycall N0CALL`, then `minicom -D ~/.ham-tnc2` / `screen ~/.ham-tnc2`
+and type `C K1ABC` at the `cmd:` prompt. AGWPE clients: `--agw 8000`.
 
 Point-to-point (no PBX): one station runs `--sip-listen --sip-port 5070`, the other `--sip-dial x@HOST:5070`.
 
