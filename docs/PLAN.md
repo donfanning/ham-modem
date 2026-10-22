@@ -119,7 +119,67 @@ The audio clock is the RTP 20 ms tick. The TX thread pulls from the channel's sa
    - Test that G.711 is correctly refused or warned against.
    - Interop with Direwolf in 9600 mode.
    - Profile again, and add Numba or Rust only if the budget is exceeded.
-7. **Later:** FX.25/IL2P FEC, a P2P SIP direct-call mode (a two-station link without a bridge), the TUI/dashboard, packaging (PyInstaller like El-Modem), and serialsim/com0com for real DCD lines.
+7. **Later:** FX.25/IL2P FEC *(done)*, a P2P SIP direct-call mode *(done: `--sip-listen`)*, the TUI/dashboard, packaging (PyInstaller like El-Modem), and serialsim/com0com for real DCD lines. *(The last three are still open: see the roadmap below.)*
+
+## Status (2026-10-22)
+
+Phases 0–7 are done, and so is everything below; details are in the dated notes under `lab/`.
+
+| Area | Done |
+|---|---|
+| Modems | AFSK 1200/300; G3RUH 9600/19200/38400; PAM-4 19.2k/57.6k; passband QAM 38.4k/51.2k |
+| Link layer | AX.25 v2.0 connected mode; FX.25 (Direwolf-compatible); IL2P (Direwolf 1.7-compatible); erasure-aware FX.25 decoding; `--repeat` time diversity; CSMA/CD for rooms |
+| DTE interfaces | KISS (pty/tty/TCP), TNC-2 command mode, AGWPE |
+| Audio legs | SIP (PCMU/PCMA/L16 at 16 and 48 kHz, dial or listen, digest auth); IAX2 (µ-law, from El-Modem's binding); UDP raw PCM |
+| Lab | Isolated Asterisk lab (`ham-modem-lab`, 172.31.73.0/24) with rooms 7300 (8 kHz), 7316 (16 kHz), 7348 (48 kHz) and echo 7399; ConfBridge harness; third-party test with Direwolf as a digipeater peer plus `kissutil` |
+
+## Roadmap
+
+Phases are ordered by value. The first is a prerequisite for every HF protocol after it.
+
+8. **HF channel simulator** *(prerequisite for all HF work)*. Over pure VoIP the channel is clean. HF modes matter for remote-HF gateways (a VoIP leg bridged to a real HF radio) and for interop with HF BBS and messaging networks, so they must be measured on realistic channels:
+   - a Watterson / CCIR 520 (ITU-R F.1487) two-path fading model: good, moderate and poor channels, with Doppler spread, multipath delay, AWGN at a set SNR, frequency offset, and impulse noise;
+   - available both offline (`tests/impair.py`, WAV tools) and live (an audio-hub mode that impairs the mix).
+9. **Open HF/VHF modes that reuse what exists** (small):
+   - Direwolf-compatible **2400 bd QPSK (V.26)** and **4800 bd 8PSK (V.27)**;
+   - **IL2P at 300 bd** and NinoTNC's HF/VHF PSK modes;
+   - Direwolf interop tests for each, like the earlier ones.
+10. **ARDOP** (Winlink's open HF protocol; large): the waveforms (4FSK/PSK/QAM in 200–2000 Hz bandwidths), the ARQ session layer, and the host interface Winlink clients expect. Interop target: `ardopcf`. **Verify the license before reusing any code.**
+11. **FreeDATA / codec2 OFDM data modes** (medium): wrap libcodec2 (LGPL) for the `datac*` modes rather than reimplement them, and add FreeDATA's ARQ/session layer if wanted.
+12. **Legacy HF ARQ modes** (medium): **PACTOR-I** (FSK 100/200 bd, memory-ARQ, Huffman), **AMTOR/SITOR-A/B** (CCIR 476/625) and **G-TOR** (Golay coding; Kantronics' DCC paper). All are published, and give legacy BBS interop.
+13. **Published military HF standards** (large, optional): **STANAG 4285** and **MIL-STD-188-110A/B** serial-tone PSK, with **STANAG 5066** as the data-link layer. They are robust HF waveforms with public specifications.
+14. **Keyboard / messaging modes** (medium each, lower TNC value): RTTY (Baudot), PSK31/63, MFSK16, Olivia/Contestia, Thor/DominoEX, and JS8. Interop targets: fldigi and JS8Call.
+15. **Reverse-engineered proprietary HF modes** (research). Method and constraints are below. Order:
+    1. **PACTOR-II/III**: highest demand (Winlink, maritime); SCS has published protocol descriptions for III, and the II waveform is reasonably documented.
+    2. **Clover-II/2000 (HAL)**: the waveform is well described in Ray Petit's DCC papers (pulsed four-tone, adaptive BPSK up to 16-level, Reed-Solomon) and the patents have expired. The ARQ handshake needs recordings of real links. Mostly historical value.
+    3. **PACTOR-IV**: less documented.
+    4. **VARA**: last. It is closed, changes often, and has no published spec.
+16. **AX.25 kernel apps and NET/ROM** *(pinned by the user, NET/ROM especially)*. The kernel stack cannot run isolated in a container: it shares the host kernel, and as far as we know it only works in the initial network namespace. Container-friendly options:
+    - a **userspace NET/ROM** layer (NODES routing, L3/L4 circuits, node commands; the default, as BPQ does it);
+    - a **TUN device** for IP over AX.25 (PID 0xCC);
+    - an **LD_PRELOAD shim** mapping AF_AX25 sockets onto AGWPE, for specific tools (`call`, `axcall`, `beacon`);
+    - a **VM** with its own kernel when the real stack is needed.
+
+    Before designing anything, ask the user which kernel-app and NET/ROM features to capture.
+17. **Smaller open items:**
+    - **Erasure handling:** erasure-aware IL2P decoding; an FX.25 tag search that tolerates erasures (losses that hit the 64-bit tag); handling loss on the station-to-bridge leg, which arrives as silence in the mix with no RTP gap.
+    - **TNC-2:** settings persistence (JSON "NVRAM", like El-Modem) and multiple streams.
+    - **IAX2 and SIP:** per-station IAX2 users so stations can call each other through the PBX; making Asterisk send 10 ms L16/48000 packets (20 ms packets are 1932 bytes and fragment); a QAM equaliser if a real network path adds filtering.
+    - **Performance:** vectorised G3RUH PLL (38400 bd is the costliest mode left).
+    - **Packaging and tooling:** packaging (PyInstaller), the TUI/dashboard, serialsim/com0com for real DCD lines, a connected-mode test against Direwolf through an AGW client.
+
+### Reverse-engineering approach (phase 15)
+
+- **Clean room, black box.** Work from published papers and protocol descriptions, and from over-the-air recordings (e.g. sigidwiki, or links recorded with real HAL or SCS hardware). Do not disassemble vendor software or firmware, and do not distribute vendor code.
+- **Legal position.** Signals sent in the clear on amateur bands may be analysed. FCC §97.309 requires amateur digital codes to be publicly documented, and our implementation will be. Reverse engineering for interoperability is broadly protected (EU Software Directive Art. 6; US law is narrower). Check each vendor's licence terms (VARA's especially) in the user's jurisdiction before starting.
+- **Naming.** Do not use vendor trademarks as mode names ("PACTOR" is SCS's, "VARA" is EA5HVK's); describe compatibility instead.
+- **Prerequisites.** Real modems or link recordings are needed for the ARQ layers. Without them the waveform can be built, but handshake timing is guesswork. Open question for the user: is HAL/SCS hardware or recordings available?
+
+### Open decisions for the user
+
+1. After the channel simulator (phase 8): start with phase 9 (small, open) or go straight to ARDOP (phase 10) for Winlink?
+2. Is HAL/SCS hardware or recordings of real links available for phase 15?
+3. Which NET/ROM / kernel-app features to capture (phase 16)?
 
 ## Verification
 - `python -m unittest discover tests` covers the codecs (KISS, AX.25, HDLC/NRZI/FCS), modem round-trips with impairments, and the CSMA logic.
