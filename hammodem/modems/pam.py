@@ -101,6 +101,7 @@ class PamDemodulator:
         self.prev = 0.0                      # previous strobe value (Gardner)
         self.level = 0.0                     # tracked E|y| = 2A
         self._since_open = 0
+        self._grids: dict[int, tuple[np.ndarray, np.ndarray]] = {}
         self.quality = 0.0
         self.desc_state = 0
         self.nrzi = NrziDecoder()
@@ -145,34 +146,43 @@ class PamDemodulator:
         self._buf = np.concatenate((self._buf, y - mean[-len(y):]))
         return self._symbols()
 
-    BLOCK = 16                               # symbols per timing/level update (16: best noise margin; 8 costs CPU)
+    BLOCK = 16                               # symbols per timing/level update while acquiring
+    TRACK_BLOCK = 16                         # ... once locked (32 saves ~1.3% CPU at 57.6k but costs noise margin)
+    ACQUIRE = 800                            # symbols after the squelch opens that count as acquisition
     KP, KI = 0.6, 0.01                       # loop gains per block (samples per unit of normalised Gardner error)
+
+    def _grid(self, m: int) -> tuple[np.ndarray, np.ndarray]:
+        """[0..m-1, 0..m-1] and offsets [0.., -SPS/2..]: strobe and half-symbol positions for m symbols."""
+        g = self._grids.get(m)
+        if g is None:
+            k = np.arange(m, dtype=np.float64)
+            g = self._grids[m] = (np.concatenate((k, k)), np.concatenate((np.zeros(m), np.full(m, -SPS / 2))))
+        return g
 
     def _symbols(self) -> list[bytes]:
         """Timing, level and slicing run vectorised over blocks of BLOCK symbols (VoIP clock offsets are a few
         hundred ppm at most, so per-block loop updates are plenty); only the HDLC state machine is per bit."""
         buf = self._buf
         n = len(buf)
-        half = SPS / 2
         nominal = float(SPS)
-        decay = 0.99 ** self.BLOCK
         levels: list[np.ndarray] = []
-        amps: list[np.ndarray] = []
+        amps: list[tuple[int, float]] = []
         strobes: list[np.ndarray] = []
+        track_spans = bool(self._spans)
         while True:
             avail = int((n - 2 - self.pos) // self.period) + 1
             if avail <= 0:
                 break
-            k = np.arange(min(self.BLOCK, avail))
-            p = self.pos + k * self.period
-            i = p.astype(np.int64)
-            y = buf[i] + (buf[i + 1] - buf[i]) * (p - i)
-            pm = np.maximum(p - half, 0.0)
-            j = pm.astype(np.int64)
-            ym = buf[j] + (buf[j + 1] - buf[j]) * (pm - j)
-            prev = np.concatenate(([self.prev], y[:-1]))
-            ay = np.abs(y)
-            mean_ay = float(ay.mean())
+            m = min(self.BLOCK if self._since_open < self.ACQUIRE else self.TRACK_BLOCK, avail)
+            kvec, off = self._grid(m)
+            # Symbol strobes and the half-symbol points between them, interpolated in one pass.
+            pp = np.maximum(off + self.pos + kvec * self.period, 0.0)
+            ii = pp.astype(np.int64)
+            lo = buf[ii]
+            v = lo + (buf[ii + 1] - lo) * (pp - ii)
+            y, ym = v[:m], v[m:]
+            sum_ay = float(np.abs(y).sum())
+            mean_ay = sum_ay / m
             if mean_ay < 2 * SQUELCH:
                 self._since_open = 0                   # silence: hold timing, restart level acquisition
                 self.level = mean_ay
@@ -180,33 +190,37 @@ class PamDemodulator:
                 # Symmetric average of |y| = 2A, fast just after the squelch opens so it settles in the preamble.
                 rate = 0.5 if self._since_open < 400 else 0.1
                 self.level += (mean_ay - self.level) * rate
-                self._since_open += len(k)
+                self._since_open += m
             a = self.level * 0.5
             shift = 0.0
             if a > SQUELCH:
-                err = float(np.mean(ym * (y - prev))) / (4 * a * a)     # Gardner; positive = strobing late
-                err = max(-1.0, min(1.0, err))
+                # Gardner: mean of ym * (y - previous y); positive = strobing late.
+                g = ym[0] * (y[0] - self.prev) + float(np.dot(ym[1:], y[1:] - y[:-1]))
+                err = max(-1.0, min(1.0, g / m / (4 * a * a)))
                 self.period = max(nominal * 0.99, min(nominal * 1.01, self.period - self.KI * err))
                 shift = -self.KP * err
-                ideal = np.where(ay < 2 * a, a, 3 * a)
-                good = float(np.mean(np.abs(ay - ideal) < 0.5 * a))
-                self.quality = self.quality * decay + (1 - decay) * (2 * good - 1)
-            else:
-                self.quality = self.quality * decay - (1 - decay)
             self.prev = float(y[-1])
-            self.pos = float(p[-1]) + self.period + shift
+            self.pos = float(pp[m - 1]) + self.period + shift
             levels.append(y)
-            amps.append(np.full(len(y), a))
-            strobes.append(p + self._buf_abs)
+            amps.append((m, a))
+            if track_spans:
+                strobes.append(pp[:m] + self._buf_abs)
         keep = max(0, int(self.pos) - SPS)          # history for the half-symbol sample
         self._buf = buf[keep:]
         self.pos -= keep
         self._buf_abs += keep
-        self.quality = max(-1.0, min(1.0, self.quality))
         if not levels:
+            self.quality = max(-1.0, self.quality * 0.9 - 0.1)
             return []
         y = np.concatenate(levels)
-        a = np.concatenate(amps)
+        a = np.repeat([x for _, x in amps], [c for c, _ in amps])
+        # DCD quality: share of strobes within 0.5A of an ideal level, smoothed once per call.
+        ay = np.abs(y)
+        live = a > SQUELCH
+        good = float(np.mean(np.abs(ay - np.where(ay < 2 * a, a, 3 * a)) < 0.5 * a)) if live.any() else 0.0
+        target = 2 * good - 1 if live.any() else -1.0
+        d = 0.99 ** len(y)
+        self.quality = max(-1.0, min(1.0, self.quality * d + (1 - d) * target))
         line = np.empty(2 * len(y), np.uint8)       # Gray: b0 = sign, b1 = inner level
         line[0::2] = y >= 0
         line[1::2] = np.abs(y) < 2 * a
@@ -218,14 +232,9 @@ class PamDemodulator:
         lv = np.concatenate(([self.nrzi.level], bits))
         data = (lv[1:] == lv[:-1]).astype(np.uint8)
         self.nrzi.level = int(lv[-1])
-        out: list[bytes] = []
-        push = self.hdlc.push
-        for d in data.tolist():
-            frame = push(d)
-            if frame is not None:
-                out.append(frame)
+        out: list[bytes] = self.hdlc.push_bits(data)
         ext = None
-        if self._spans:
+        if self._spans and strobes:
             at = np.concatenate(strobes).astype(np.int64)
             sym = span_mask(self._spans, int(at[0]), int(at[-1] - at[0]) + 1)[at - at[0]]
             ext, self._since = extend_bits(np.repeat(sym, 2), self._since, ERASE_TAIL)

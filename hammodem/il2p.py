@@ -238,76 +238,85 @@ def burst_levels(frames: list[bytes], preamble_bytes: int, postamble_bytes: int 
 # ------------------------------------------------------------------------------------------- receive
 
 class Il2pReceiver:
-    """Bit-at-a-time IL2P receiver fed with *raw line levels* (before NRZI and descrambling)."""
+    """IL2P receiver fed with *raw line levels* (before NRZI and descrambling), vectorised: the sync search is a
+    24-bit window match over the block (<= 1 bit error, either polarity) and header/payload bytes are sliced out
+    of the bit stream once their length is known."""
+
+    BATCH = 256
 
     def __init__(self) -> None:
-        self.acc = 0
+        self.pend = np.zeros(0, np.uint8)       # bits not yet consumed
         self.state = "search"
         self.polarity = 0
-        self.buf = bytearray()
-        self.bc = 0
-        self.byte = 0
-        self.need = 0
+        self.need = 0                           # bytes wanted in header/payload state
         self.hdr: bytes | None = None
+        self.blocks: list[int] = []
+        self.parity = 0
         self.max_fec = True
         self.frames = 0
         self.corrected = 0
 
     def feed_bits(self, bits) -> list[bytes]:
-        out = []
-        for b in (bits.tolist() if isinstance(bits, np.ndarray) else bits):
-            frame = self._bit(b)
+        self.pend = np.concatenate((self.pend, np.asarray(bits, np.uint8)))
+        out: list[bytes] = []
+        while True:
+            if self.state == "search":
+                if len(self.pend) < max(24, self.BATCH):
+                    return out
+                win = np.lib.stride_tricks.sliding_window_view(self.pend, 24)
+                b = np.packbits(win, axis=1, bitorder="big").astype(np.uint32)
+                val = (b[:, 0] << 16) | (b[:, 1] << 8) | b[:, 2]
+                hit = np.flatnonzero((np.bitwise_count(val ^ SYNC) <= 1) |
+                                     (np.bitwise_count((~val & 0xFFFFFF) ^ SYNC) <= 1))
+                if len(hit) == 0:
+                    self.pend = self.pend[-23:]
+                    return out
+                i = int(hit[0])
+                self.polarity = 0 if int(np.bitwise_count(val[i] ^ SYNC)) <= 1 else 1
+                self.pend = self.pend[i + 24:]
+                self.state, self.need = "header", HEADER_SIZE + HEADER_PARITY
+                continue
+            if len(self.pend) < 8 * self.need:
+                return out
+            chunk = np.packbits(self.pend[:8 * self.need], bitorder="big")
+            if self.polarity:
+                chunk = ~chunk
+            data = chunk.tobytes()
+            self.pend = self.pend[8 * self.need:]
+            if self.state == "header":
+                if not self._header(data):
+                    self.state = "search"
+                elif self.need == 0:
+                    frame = self._finish(b"")
+                    if frame is not None:
+                        out.append(frame)
+                continue
+            frame = self._finish(data)
             if frame is not None:
                 out.append(frame)
-        return out
 
-    def _bit(self, b: int) -> bytes | None:
-        self.acc = ((self.acc << 1) | b) & 0xFFFFFF
-        if self.state == "search":
-            if (self.acc ^ SYNC).bit_count() <= 1:
-                self.polarity = 0
-            elif ((~self.acc & 0xFFFFFF) ^ SYNC).bit_count() <= 1:
-                self.polarity = 1
-            else:
-                return None
-            self.state, self.buf, self.bc, self.need = "header", bytearray(), 0, HEADER_SIZE + HEADER_PARITY
-            return None
-        self.bc += 1
-        if self.bc < 8:
-            return None
-        self.bc = 0
-        self.buf.append((self.acc if not self.polarity else ~self.acc) & 0xFF)
-        if len(self.buf) < self.need:
-            return None
-        if self.state == "header":
-            res = _rs(HEADER_PARITY).decode(bytes(self.buf))
-            if res is None:
-                self.state = "search"
-                return None
-            self.hdr = descramble_block(res[0][:HEADER_SIZE])
-            self.corrected = res[1]
-            self.max_fec = bool(_get(self.hdr, 7, 0, 1))
-            plan = payload_blocks(_get(self.hdr, 7, 11, 10), self.max_fec)
-            if plan is None:
-                self.state = "search"
-                return None
-            blocks, parity = plan
-            self.blocks, self.parity = blocks, parity
-            self.need = sum(blocks) + parity * len(blocks)
-            self.buf = bytearray()
-            if self.need == 0:
-                return self._finish()
-            self.state = "payload"
-            return None
-        return self._finish()
+    def _header(self, data: bytes) -> bool:
+        res = _rs(HEADER_PARITY).decode(data)
+        if res is None:
+            return False
+        self.hdr = descramble_block(res[0][:HEADER_SIZE])
+        self.corrected = res[1]
+        self.max_fec = bool(_get(self.hdr, 7, 0, 1))
+        plan = payload_blocks(_get(self.hdr, 7, 11, 10), self.max_fec)
+        if plan is None:
+            return False
+        self.blocks, self.parity = plan
+        self.need = sum(self.blocks) + self.parity * len(self.blocks)
+        self.state = "payload"
+        return True
 
-    def _finish(self) -> bytes | None:
+    def _finish(self, data: bytes) -> bytes | None:
         self.state = "search"
         payload = b""
         pos = 0
         fixed = self.corrected
         for size in self.blocks:
-            block = bytes(self.buf[pos:pos + size + self.parity])
+            block = data[pos:pos + size + self.parity]
             pos += size + self.parity
             res = _rs(self.parity).decode(block)
             if res is None:

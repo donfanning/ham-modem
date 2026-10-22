@@ -55,3 +55,26 @@ class HdlcTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VectorHdlcTest(unittest.TestCase):
+    def test_matches_bitwise_decoder(self):
+        rng = random.Random(7)
+        for trial in range(20):
+            frames = [bytes(rng.randrange(256) for _ in range(rng.randrange(15, 400))) for _ in range(6)]
+            bits = [rng.randrange(2) for _ in range(rng.randrange(0, 300))]      # noise before
+            for f in frames:
+                bits += frame_bits(f, rng.randrange(1, 5), rng.randrange(1, 3))
+                if rng.random() < 0.3:
+                    bits += [1] * 9 + [rng.randrange(2) for _ in range(50)]    # abort + junk between
+            if trial % 3 == 0:
+                bits[rng.randrange(len(bits))] ^= 1                             # a corrupted frame
+            ref, rx = decode(bits)
+            vec = HdlcDecoder()
+            got, i = [], 0
+            while i < len(bits):
+                n = rng.randrange(1, 900)
+                got += vec.push_bits(bits[i:i + n])
+                i += n
+            self.assertEqual(got, ref, f"trial {trial}")
+            self.assertEqual(vec.bad_fcs, rx.bad_fcs, f"trial {trial}")

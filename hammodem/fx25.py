@@ -248,11 +248,27 @@ class Fx25Receiver:
         self.corrected = 0
         self.failed = 0
         self.erasures = 0                  # bytes marked erased from concealed audio
+        self._qb: list[np.ndarray] = []
+        self._qe: list[np.ndarray] = []
+        self._qn = 0
+
+    BATCH = 256                            # bits gathered before a vectorised tag search (call overhead)
 
     def feed_bits(self, bits, erased=None) -> list[bytes]:
         """``erased``: optional per-bit mask of bits demodulated from concealed audio."""
         bits = np.asarray(bits, np.uint8)
         erased = np.zeros(len(bits), bool) if erased is None else np.asarray(erased, bool)
+        if self.collect is None:
+            self._qb.append(bits)
+            self._qe.append(erased)
+            self._qn += len(bits)
+            if self._qn < self.BATCH:
+                return []
+            bits, erased = np.concatenate(self._qb), np.concatenate(self._qe)
+            self._qb, self._qe, self._qn = [], [], 0
+        return self._process(bits, erased)
+
+    def _process(self, bits: np.ndarray, erased: np.ndarray) -> list[bytes]:
         out: list[bytes] = []
         pos = 0
         while pos < len(bits):
