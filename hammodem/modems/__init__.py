@@ -6,7 +6,7 @@ Every modem pair has the same surface. Modulator: ``modulate(frames, txdelay, tx
 
 from __future__ import annotations
 
-MODEMS = ("afsk1200", "afsk300", "g3ruh9600", "g3ruh19200", "g3ruh38400", "pam19200", "pam57600", "qam38400",
+MODEMS = ("afsk1200", "afsk300", "psk2400", "psk4800", "g3ruh9600", "g3ruh19200", "g3ruh38400", "pam19200", "pam57600", "qam38400",
           "qam51200")
 
 
@@ -18,6 +18,9 @@ def default_rate(name: str) -> int:
 
 def make(name: str, fs: int):
     """(modulator, demodulator) for ``name`` at sample rate ``fs``."""
+    if name.startswith("psk"):
+        from .psk import PROFILES as PSKP, PskDemodulator, PskModulator  # noqa: PLC0415
+        return PskModulator(PSKP[name], fs), PskDemodulator(PSKP[name], fs)
     if name.startswith("qam"):
         from .qam import RATES as QRATES, QamDemodulator, QamModulator  # noqa: PLC0415
         return QamModulator(fs, QRATES[name]), QamDemodulator(fs, QRATES[name])

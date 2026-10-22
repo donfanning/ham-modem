@@ -140,7 +140,7 @@ Phases are ordered by value. The first is a prerequisite for every HF protocol a
 8. **HF channel simulator** *(done 2026-10-22: `hammodem/hfchannel.py`, [lab note](../lab/HF_CHANNEL_2026_10_22.md))*. Over pure VoIP the channel is clean. HF modes matter for remote-HF gateways (a VoIP leg bridged to a real HF radio) and for interop with HF BBS and messaging networks, so they must be measured on realistic channels:
    - a Watterson / CCIR 520 (ITU-R F.1487) two-path fading model: good, moderate and poor channels, with Doppler spread, multipath delay, AWGN at a set SNR, frequency offset, and impulse noise;
    - available both offline (`tests/impair.py`, WAV tools) and live (an audio-hub mode that impairs the mix).
-9. **Open HF/VHF modes that reuse what exists** (small):
+9. **Open HF/VHF modes that reuse what exists** *(Direwolf 2400 QPSK / 4800 8PSK and IL2P 300 done 2026-10-22, [lab note](../lab/PSK_IL2P300_2026_10_22.md); NinoTNC's own PSK modes still open -- find NinoTNC's published docs/firmware online)* (small):
    - Direwolf-compatible **2400 bd QPSK (V.26)** and **4800 bd 8PSK (V.27)**;
    - **IL2P at 300 bd** and NinoTNC's HF/VHF PSK modes;
    - Direwolf interop tests for each, like the earlier ones.

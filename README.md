@@ -27,6 +27,7 @@ Design, research notes and phases: [docs/PLAN.md](docs/PLAN.md).
 | Passband QAM 38.4k / 51.2k on 16 kHz legs (`--modem qam38400` / `qam51200`, room 7316) | done; live 48/48 in the 16 kHz room ([lab note](lab/QAM_2026_10_21.md)) |
 | Third-party software: Direwolf 1.7 as a live digipeater/beacon peer + Direwolf `kissutil` on our KISS-TCP, all in lab-network containers (`lab/realapps_test.sh`) | passes ([lab note](lab/REALAPPS_2026_10_22.md)) |
 | HF channel simulator (Watterson/CCIR 520; `tools/hf_channel.py`, `audio_hub.py --hf`, `tools/hf_bench.py`) | done; validated; baseline for HF modes ([lab note](lab/HF_CHANNEL_2026_10_22.md)) |
+| Direwolf-compatible 2400 QPSK / 4800 8PSK (`--modem psk2400` / `psk4800`, G.711 legs), IL2P at 300 bd | done; Direwolf interop both ways ([lab note](lab/PSK_IL2P300_2026_10_22.md)) |
 | CSMA/CD for rooms (`--collision-detect`) | done, opt-in |
 
 ## Try it
