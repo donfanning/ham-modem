@@ -59,3 +59,17 @@ room 7300, each driven only through its host interface by `live_hosts.py --exter
 | ardopcf calls, 6000 B + 3000 B, 2000 Hz | both intact, 113 s, 13 data frames all ACKed first time, 0 repeats |
 
 So ARDOP survives G.711 companding, the PBX's room mixer and two resamplers with no RS corrections needed.
+
+## RTP packet loss (lab/ardop/rtp_loss.py, offline, 8 kHz leg)
+
+1500 B at 500 Hz between two `ArqStation`s, each 20 ms packet independently lost as silence (worst case; gap
+filling would do better), both directions, 3 seeds per rate; time to deliver all data / repeated frames:
+
+| loss | time (s) | repeats |
+|---|---|---|
+| 0% | 46.5, 46.5, 46.5 | 0 |
+| 1% | 49.3, 53.0, 46.5 | 1, 1, 0 |
+| 3% | 87.0, 82.6, 53.0 | 8, 6, 1 |
+| 5% | 123.9, 173.9, 95.6 | 7, 15, 8 |
+
+Data is always intact; loss costs time (a lost ACK or a lost frame costs a repeat), not the session.

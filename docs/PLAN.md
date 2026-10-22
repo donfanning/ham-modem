@@ -165,7 +165,7 @@ Phases are ordered by value. The first is a prerequisite for every HF protocol a
     - 10.4 Winlink host interface (TCP 8515 commands / 8516 data) on our audio legs; test with Pat. *(done
       2026-10-22, [lab note](../lab/ARDOP_HOST_PAT_2026_10_22.md): `ham-modem --modem ardop`; Pat 1.0.0 P2P
       through ham-modem <-> ardopcf delivers messages both ways; across ConfBridge room 7300 at 8 kHz G.711 too;
-      still open: FEC mode, RTP-loss/IAX2 runs.)*
+      RTP loss 1-5% survives (lab note); still open: FEC mode, IAX2 and third-station runs.)*
 11. **FreeDATA / codec2 OFDM data modes** (medium): wrap libcodec2 (LGPL) for the `datac*` modes rather than reimplement them, and add FreeDATA's ARQ/session layer if wanted.
 12. **Legacy HF ARQ modes** (medium): **PACTOR-I** (FSK 100/200 bd, memory-ARQ, Huffman), **AMTOR/SITOR-A/B** (CCIR 476/625) and **G-TOR** (Golay coding; Kantronics' DCC paper). All are published, and give legacy BBS interop.
 13. **Published military HF standards** (large, optional): **STANAG 4285** and **MIL-STD-188-110A/B** serial-tone PSK, with **STANAG 5066** as the data-link layer. They are robust HF waveforms with public specifications.
