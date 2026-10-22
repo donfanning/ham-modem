@@ -16,10 +16,24 @@ Design, research notes and phases: [docs/PLAN.md](docs/PLAN.md).
 | AFSK 1200 / 300 modulator + demodulator (slicer bank, PLL, DCD) | done; interoperates with Direwolf both ways ([lab note](lab/AFSK_BASELINE_2026_10_21.md)) |
 | CSMA channel (p-persist, DCD from timing quality + in-band energy), KISS pty / tty / TCP | done; live test through `tools/audio_hub.py` with Direwolf monitoring |
 | TNC-2 command mode, AX.25 connected mode, AGWPE | phase 4 |
-| RTP/SIP/IAX2 + ConfBridge lab | phase 3 |
+| SIP (dial / listen, digest), RTP (PCMU/PCMA/L16, loss concealment), Asterisk ConfBridge lab | **milestone 1 reached**: 3 stations in a ConfBridge, Direwolf monitoring ([lab note](lab/CONFBRIDGE_MILESTONE1_2026_10_21.md)) |
+| IAX2 leg | not yet (El-Modem's Rust `iax2` binding to port) |
 | G3RUH 9600 over L16/16 kHz | phase 6 |
 
 ## Try it
+
+Through a real Asterisk conference room (the lab PBX binds only to loopback):
+
+```sh
+(cd lab/asterisk && docker compose up -d)
+export PYTHONPATH=$PWD
+.venv/bin/python -m hammodem.main --sip-dial 7300@127.0.0.1:15060 --local-ip 127.0.0.1 --kiss-tcp 8001 -m &
+.venv/bin/python -m hammodem.main --sip-dial 7300@127.0.0.1:15060 --local-ip 127.0.0.1 --kiss-pty ~/.ham-modem1 -m &
+.venv/bin/python lab/confbridge_test.py --stations 3 --frames 10 [--loss 0.03]   # delivery matrix
+```
+
+Point-to-point (no PBX): one station runs `--sip-listen --sip-port 5070`, the other `--sip-dial x@HOST:5070`.
+
 
 Two TNCs on a local stand-in for a conference bridge (raw PCM over UDP), Direwolf-compatible:
 
