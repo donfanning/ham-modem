@@ -57,6 +57,43 @@ def _tone_energies(x: np.ndarray, pos: int, n: int, freqs) -> np.ndarray:
     return np.array([abs(np.dot(seg, np.exp(-2j * np.pi * f / FS * t))) ** 2 for f in freqs])
 
 
+def quality_4fsk(mags: np.ndarray) -> int:
+    """ardopcf's 4FSK constellation quality (Update4FSKConstellation) from per-symbol tone energies: 100 for
+    clean tones, ~25 for noise."""
+    if len(mags) == 0:
+        return 0
+    tot = mags.sum(axis=1)
+    others = tot - mags.max(axis=1)
+    rad = np.maximum(5, 42 - 80 * others / np.maximum(tot, 1e-12))
+    return int(np.clip(100 - 2.7 * np.mean(42 - rad), 0, 100))
+
+
+def snr_4fsk(mags: np.ndarray, baud: int) -> int:
+    """S:N (dB in 3 kHz) estimated from 4FSK tone energies: the three idle tones of each symbol measure the noise
+    per tone bin (bandwidth = baud)."""
+    if len(mags) == 0:
+        return -10
+    peak = mags.max(axis=1)
+    noise = (mags.sum(axis=1) - peak) / 3
+    n = max(float(np.mean(noise)), 1e-9)
+    s = max(float(np.mean(peak)) - n, 1e-9)
+    return int(round(10 * np.log10(s / n) - 10 * np.log10(3000 / baud)))
+
+
+def quality_psk(phase_err: np.ndarray, step: float, mags: np.ndarray | None = None) -> int:
+    """ardopcf's PSK/QAM quality (UpdatePhaseConstellation): 100 - 200 x mean |phase error| / phase step, for
+    16QAM scaled by (1 - relative radius spread of the inner and outer rings)."""
+    q = 100 - 200 * float(np.mean(phase_err)) / step
+    if mags is not None:
+        outer = mags >= 0.75 * mags.max()
+        spread = 0.0
+        for ring in (mags[outer], mags[~outer]):
+            if len(ring):
+                spread += float(np.mean(np.abs(ring - ring.mean())) / ring.mean())
+        q *= 1 - spread
+    return int(max(0, min(100, q)))
+
+
 class Receiver:
     LEADER_THRESHOLD = 0.6        # normalised correlation with the leader template
     MIN_LEADER_SYMBOLS = 4
@@ -66,6 +103,7 @@ class Receiver:
         self.sessions = (0xFF, *sessions)
         self._tpl = modulate._LEADER / np.linalg.norm(modulate._LEADER)
         self.waiting: int | None = None
+        self.leader_ms = 0                # received leader (incl. sync) of the last frame found
         self._types = sorted(codec.FRAMES)
 
     # ------------------------------------------------------------------ leader + sync
@@ -104,7 +142,9 @@ class Receiver:
                 signs.append(np.sign(c))
                 if len(signs) >= 2 and signs[-1] == signs[-2]:
                     if len(signs) - 1 >= self.MIN_LEADER_SYMBOLS - 1:
-                        return self._fine_timing(x, p + LEADER_SYM)   # frame type starts after the sync symbol
+                        start = self._fine_timing(x, p + LEADER_SYM)  # frame type starts after the sync symbol
+                        self.leader_ms = (start - best) * 1000 // FS
+                        return start
                     break
                 p += LEADER_SYM
             pos = best + LEADER_SYM
@@ -143,7 +183,8 @@ class Receiver:
 
     # ------------------------------------------------------------------ data
 
-    def _fsk_bytes(self, x: np.ndarray, pos: int, nbytes: int, baud: int) -> tuple[bytes, int]:
+    def _fsk_bytes(self, x: np.ndarray, pos: int, nbytes: int, baud: int,
+                   mags: list | None = None) -> tuple[bytes, int]:
         n = FS // baud
         freqs = {50: modulate.FSK50, 100: modulate.FSK100, 600: modulate.FSK600}[baud]
         out = bytearray()
@@ -151,7 +192,10 @@ class Receiver:
         for _ in range(nbytes):
             v = 0
             for _ in range(4):
-                v = (v << 2) | int(np.argmax(_tone_energies(x, p, n, freqs)))
+                e = _tone_energies(x, p, n, freqs)
+                if mags is not None:
+                    mags.append(e)
+                v = (v << 2) | int(np.argmax(e))
                 p += n
             out.append(v)
         return bytes(out), p
@@ -184,14 +228,18 @@ class Receiver:
             start = pos                                                 # not a frame: keep searching after it
         info = codec.FRAMES[t]
         p = pos + 10 * LEADER_SYM
-        extra = {"type_score": round(score, 3)}
+        extra = {"type_score": round(score, 3), "leader_ms": self.leader_ms}
         need = p + self.body_samples(t)
         if need > len(x):
             return Decoded(t, info.name, sess, None, False, 0, pos, len(x), dict(extra, truncated=True, need=need))
         if info.mod in modulate.BITS:
             return self._decode_psk(x, t, info, sess, pos, p, extra)
         if t in (codec.IDFRAME, codec.PING) or t in codec.CONREQ.values():
-            raw, p = self._fsk_bytes(x, p, 16, 50)
+            mags: list = []
+            raw, p = self._fsk_bytes(x, p, 16, 50, mags)
+            m4 = np.array(mags)
+            extra["quality"] = quality_4fsk(m4)
+            extra["snr_db"] = snr_4fsk(m4, 50)
             res = codec.rs_correct(raw, 4)
             ok = res is not None
             data, fixed = (res if ok else (raw[:12], 0))
@@ -208,18 +256,21 @@ class Receiver:
             return Decoded(t, info.name, sess, raw, raw.count(vals[1]) >= 2, 0, pos, p, extra)
         if info.data_len == 0:                                          # ACK/NAK/BREAK/IDLE/DISC/END/...
             return Decoded(t, info.name, sess, None, True, 0, pos, p, extra)
-        payload = b""
-        ok, fixed_total = True, 0
+        ok, fixed_total, blocks, mags = True, 0, [], []
         nblocks, dlen, rlen = modulate.fsk_blocks(info)
         for _ in range(nblocks):
-            raw, p = self._fsk_bytes(x, p, dlen + 3 + rlen, info.baud)
+            raw, p = self._fsk_bytes(x, p, dlen + 3 + rlen, info.baud, mags)
             res = codec.rs_correct(raw, rlen)
             if res is None or not codec.check_crc(res[0], t):
                 ok = False
+                blocks.append(None)
                 continue
             block, fixed = res
             fixed_total += fixed
-            payload += block[1:1 + block[0]]
+            blocks.append(block[1:1 + block[0]])
+        extra["blocks"] = blocks
+        extra["quality"] = quality_4fsk(np.array(mags))
+        payload = b"".join(b for b in blocks if b is not None)
         return Decoded(t, info.name, sess, payload, ok, fixed_total, pos, p, extra)
 
     def _decode_psk(self, x, t, info, sess, pos, p, extra) -> Decoded:
@@ -232,17 +283,15 @@ class Receiver:
         env = modulate._PSK_ENV
         end = p + (nsym + 1) * 120
         seg = x[p:end].reshape(nsym + 1, 120)
-        payload, ok, fixed_total, qual = b"", True, 0, []
+        ok, fixed_total, qual, blocks = True, 0, [], []
+        step = np.pi / 2 if info.mod == "4PSK" else np.pi / 4
         for f in modulate.CARRIERS[info.carriers]:
             z = (seg * env) @ np.exp(-2j * np.pi * f * k / FS)
             d = z[1:] * np.conj(z[:-1])
-            idx = np.round(np.angle(d) / (np.pi / 4)).astype(np.int64) % 8
-            resid = np.angle(d * np.exp(-1j * idx * np.pi / 4))
-            qual.append(float(np.mean(np.abs(resid))))
-            if info.mod == "4PSK":
-                syms = (idx // 2) & 3
-            else:
-                syms = idx & 7
+            idx = np.round(np.angle(d) / step).astype(np.int64)
+            resid = np.abs(np.angle(d * np.exp(-1j * idx * step)))
+            qual.append(float(np.mean(resid)))
+            syms = idx & (3 if info.mod == "4PSK" else 7)
             if info.mod == "16QAM":
                 full = abs(z[0])                                       # reference symbol: full amplitude
                 half = np.abs(z[1:]) < 0.75 * full
@@ -254,11 +303,16 @@ class Receiver:
             res = codec.rs_correct(raw, info.rs_len)
             if res is None or not codec.check_crc(res[0], t):
                 ok = False
+                blocks.append(None)
                 continue
             block, fixed = res
             fixed_total += fixed
-            payload += block[1:1 + block[0]]
+            blocks.append(block[1:1 + block[0]])
         extra["phase_error_deg"] = round(float(np.degrees(np.mean(qual))), 1)
+        extra["blocks"] = blocks
+        # ardopcf reports the quality of the last carrier only
+        extra["quality"] = quality_psk(resid, step, np.abs(z[1:]) if info.mod == "16QAM" else None)
+        payload = b"".join(b for b in blocks if b is not None)
         return Decoded(t, info.name, sess, payload, ok, fixed_total, pos, end, extra)
 
     def decode_all(self, x: np.ndarray) -> list[Decoded]:

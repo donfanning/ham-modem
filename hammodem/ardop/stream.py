@@ -59,6 +59,10 @@ class Phy:
         self._scan = 0                                           # where the next search starts, within _buf
         self._need = 0                                           # buffer length a pending frame needs
 
+    def busy(self) -> bool:
+        """A frame (or leader) is arriving."""
+        return self._need > 0
+
     def set_sessions(self, sessions: tuple[int, ...]) -> None:
         self.rx.sessions = (0xFF, *sessions)
 

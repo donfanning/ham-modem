@@ -249,3 +249,10 @@ def encode_dataack(quality: int, session: int, nak: bool = False) -> bytes:
     q = max(0, min(100, quality) // 2 - 19)
     t = q if nak else codec.DATAACK_MIN + q
     return bytes((t, t ^ session))
+
+
+def encode_pingack(snr_db: int, quality: int) -> bytes:
+    """PingAck: S:N (5 bits, -10..21 dB) and quality (3 bits, 30..100) in one byte, sent three times."""
+    v = 0xF8 if snr_db >= 21 else ((snr_db + 10) & 0x1F) << 3
+    v += max(0, (quality - 30) // 10) & 7
+    return bytes((codec.PINGACK, codec.PINGACK ^ 0xFF, v, v, v))
