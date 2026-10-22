@@ -144,7 +144,20 @@ Phases are ordered by value. The first is a prerequisite for every HF protocol a
    - Direwolf-compatible **2400 bd QPSK (V.26)** and **4800 bd 8PSK (V.27)**;
    - **IL2P at 300 bd** and NinoTNC's HF/VHF PSK modes;
    - Direwolf interop tests for each, like the earlier ones.
-10. **ARDOP** (Winlink's open HF protocol; large): the waveforms (4FSK/PSK/QAM in 200–2000 Hz bandwidths), the ARQ session layer, and the host interface Winlink clients expect. Interop target: `ardopcf`. **Verify the license before reusing any code.**
+10. **ARDOP** (Winlink's open HF protocol; large). License checked 2026-10-22: **ardopcf is MIT** (Muething, Wiseman,
+    LaRue; GPL-compatible, port with attribution; `/lib` libraries carry their own licenses). Reference: ardopcf
+    (github.com/pflarue/ardop), `docs/refs/ARDOP_Specification_20171127.pdf` + Winlink host-interface spec. The
+    spec gives frame types, bandwidths, payload/FEC sizes and ARQ rules; bit-level details (tones, carriers, RS,
+    CRC init, call sign packing, session-ID hash) come from the source.
+    - 10.0 **Reference peer**: ardopcf in a lab-network container, audio through ALSA FIFOs to the hub/ConfBridge
+      (as with Direwolf): working ARDOP over VoIP immediately, and the live interop partner. Offline interop via
+      its `--decodewav` / `--writetxwav`.
+    - 10.1 **Native physical layer**: leader (50 bd two-tone), sync, frame-type 4FSK (10 symbols + parity),
+      4FSK data frames, RS FEC, CRC16, Packed6 call signs, session ID; verified both ways against ardopcf WAVs.
+    - 10.2 Multi-carrier 4PSK / 8PSK / 16QAM data frames (100 bd, 1-8 carriers).
+    - 10.3 ARQ session layer (ConReq/ConAck timing, even/odd data, ACK/NAK quality, BREAK/IDLE/DISC/END, gear
+      shifting) and FEC mode.
+    - 10.4 Winlink host interface (TCP 8515 commands / 8516 data) on our audio legs; test with Pat.
 11. **FreeDATA / codec2 OFDM data modes** (medium): wrap libcodec2 (LGPL) for the `datac*` modes rather than reimplement them, and add FreeDATA's ARQ/session layer if wanted.
 12. **Legacy HF ARQ modes** (medium): **PACTOR-I** (FSK 100/200 bd, memory-ARQ, Huffman), **AMTOR/SITOR-A/B** (CCIR 476/625) and **G-TOR** (Golay coding; Kantronics' DCC paper). All are published, and give legacy BBS interop.
 13. **Published military HF standards** (large, optional): **STANAG 4285** and **MIL-STD-188-110A/B** serial-tone PSK, with **STANAG 5066** as the data-link layer. They are robust HF waveforms with public specifications.
