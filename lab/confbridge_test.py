@@ -70,6 +70,12 @@ def main():
         procs.append(subprocess.Popen(cmd, env=env, stdout=log, stderr=subprocess.STDOUT))
     try:
         time.sleep(3)
+        dead = [i for i, p in enumerate(procs) if p.poll() is not None]
+        if dead:
+            for log in logs:
+                log.flush()
+            tail = Path(f"/tmp/ham-station{dead[0]}.log").read_text().strip().splitlines()[-1:]
+            sys.exit(f"station {dead[0]} exited at startup: {tail[0] if tail else '(no output)'}")
         stop = threading.Event()
         heard = [[] for _ in range(args.stations)]
         threads = [threading.Thread(target=listen, args=(args.base_port + i, heard[i], stop), daemon=True)

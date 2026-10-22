@@ -6,16 +6,21 @@ Every modem pair has the same surface. Modulator: ``modulate(frames, txdelay, tx
 
 from __future__ import annotations
 
-MODEMS = ("afsk1200", "afsk300", "g3ruh9600", "g3ruh19200", "g3ruh38400")
+MODEMS = ("afsk1200", "afsk300", "g3ruh9600", "g3ruh19200", "g3ruh38400", "pam19200", "pam57600")
 
 
 def default_rate(name: str) -> int:
     """The narrowest linear leg rate each modem fits."""
-    return {"g3ruh9600": 16000, "g3ruh19200": 48000, "g3ruh38400": 48000}.get(name, 8000)
+    return {"g3ruh9600": 16000, "g3ruh19200": 48000, "g3ruh38400": 48000, "pam19200": 16000,
+            "pam57600": 48000}.get(name, 8000)
 
 
 def make(name: str, fs: int):
     """(modulator, demodulator) for ``name`` at sample rate ``fs``."""
+    if name.startswith("pam"):
+        from .pam import RATES, PamDemodulator, PamModulator  # noqa: PLC0415
+        baud = RATES[name][0]
+        return PamModulator(fs, baud), PamDemodulator(fs, baud)
     if name.startswith("g3ruh"):
         from .g3ruh import G3ruhDemodulator, G3ruhModulator  # noqa: PLC0415
         baud = int(name[5:])

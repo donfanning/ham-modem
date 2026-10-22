@@ -20,6 +20,7 @@ Design, research notes and phases: [docs/PLAN.md](docs/PLAN.md).
 | IAX2 leg | not yet (El-Modem's Rust `iax2` binding to port) |
 | G3RUH 9600 bd (`--modem g3ruh9600`, L16/16 kHz legs, room 7316) | done; Direwolf interop both ways, 48/48 through the 16 kHz ConfBridge ([lab note](lab/G3RUH_9600_2026_10_21.md)) |
 | G3RUH 19200 / 38400 bd (`--modem g3ruh19200` / `g3ruh38400`, L16/48 kHz legs, room 7348) | done; 19200 interoperates with Direwolf; live 48/48 in the 48 kHz room with CSMA/CD ([lab note](lab/G3RUH_FAST_2026_10_21.md)) |
+| PAM-4 57.6 kbit/s VoIP-native mode (`--modem pam57600`, 48 kHz legs; `pam19200` on 16 kHz) | done; live 48/48 in room 7348, 96.7% at 3% RTP loss vs 58% for AFSK 1200 ([lab note](lab/PAM4_57600_2026_10_21.md)) |
 | CSMA/CD for rooms (`--collision-detect`) | done, opt-in |
 
 ## Try it
@@ -39,6 +40,7 @@ and type `C K1ABC` at the `cmd:` prompt. AGWPE clients: `--agw 8000`.
 
 9600 bd: `--modem g3ruh9600 --sip-dial 7316@172.31.73.10` (16 kHz room; 8 kHz G.711 legs are refused).
 19200/38400 bd: `--modem g3ruh19200 --sip-dial 7348@172.31.73.10` (48 kHz room, L16/48000).
+57.6 kbit/s: `--modem pam57600 --sip-dial 7348@172.31.73.10` (VoIP-only waveform; same KISS/TNC-2/AGW interfaces).
 
 Point-to-point (no PBX): one station runs `--sip-listen --sip-port 5070`, the other `--sip-dial x@HOST:5070`.
 
