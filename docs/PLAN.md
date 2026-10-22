@@ -151,7 +151,8 @@ Phases are ordered by value. The first is a prerequisite for every HF protocol a
     CRC init, call sign packing, session-ID hash) come from the source.
     - 10.0 **Reference peer**: ardopcf in a lab-network container, audio through ALSA FIFOs to the hub/ConfBridge
       (as with Direwolf): working ARDOP over VoIP immediately, and the live interop partner. Offline interop via
-      its `--decodewav` / `--writetxwav`.
+      its `--decodewav` / `--writetxwav`. *(Live peer done 2026-10-22: lab/ardop/run_peer.sh + relay.py +
+      alsa_tap.c, UDP audio to the host; still open: bridging it into the hub/ConfBridge.)*
     - 10.1 **Native physical layer** *(done 2026-10-22, [lab note](../lab/ARDOP_PHY_2026_10_22.md))*: leader (50 bd
       two-tone), sync, frame-type 4FSK (10 symbols + parity), 4FSK data frames, RS FEC, CRC16, Packed6 call signs,
       session ID; verified both ways against ardopcf WAVs (our TX is sample-exact with ardopcf's).
@@ -159,7 +160,8 @@ Phases are ordered by value. The first is a prerequisite for every HF protocol a
       600 bd FM 4FSK frames, 12 kHz <-> 8/16/48 kHz resampling and a streaming receiver (`ardop/stream.py`; every
       mode passes 8 kHz G.711) done too; still open: better 16QAM.2000 noise margin)*.
     - 10.3 ARQ session layer (ConReq/ConAck timing, even/odd data, ACK/NAK quality, BREAK/IDLE/DISC/END, gear
-      shifting) and FEC mode.
+      shifting) *(done 2026-10-22, [lab note](../lab/ARDOP_ARQ_2026_10_22.md): live sessions both ways with
+      ardopcf at 500 and 2000 Hz; still open: FEC mode, summation memory ARQ, 10-minute ID, BUSY detection)*.
     - 10.4 Winlink host interface (TCP 8515 commands / 8516 data) on our audio legs; test with Pat.
 11. **FreeDATA / codec2 OFDM data modes** (medium): wrap libcodec2 (LGPL) for the `datac*` modes rather than reimplement them, and add FreeDATA's ARQ/session layer if wanted.
 12. **Legacy HF ARQ modes** (medium): **PACTOR-I** (FSK 100/200 bd, memory-ARQ, Huffman), **AMTOR/SITOR-A/B** (CCIR 476/625) and **G-TOR** (Golay coding; Kantronics' DCC paper). All are published, and give legacy BBS interop.

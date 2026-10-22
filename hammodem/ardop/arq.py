@@ -76,16 +76,19 @@ class ArqStation:
     def __init__(self, mycall: str, fs: int = codec.SAMPLE_RATE, bandwidth: str = "500MAX", grid: str = "",
                  leader_ms: int = 240, trailer_ms: int = 20, timeout_s: int = 120, conreq_repeats: int = 5,
                  autobreak: bool = True, fast_start: bool = True, listen: bool = True, fm600: bool = False,
-                 seed: int | None = None, on_event: Callable[[str], None] | None = None) -> None:
+                 drive: float = 1.0, seed: int | None = None,
+                 on_event: Callable[[str], None] | None = None) -> None:
         self.mycall, self.grid, self.bandwidth = mycall.upper(), grid, bandwidth
         self.fs = fs
         self.phy = Phy(fs)
         self.leader_ms, self.trailer_ms = leader_ms, trailer_ms
+        self.drive = drive                               # transmit level (ardopcf DRIVELEVEL / 100)
         self.timeout_ms, self.conreq_repeats = timeout_s * 1000, conreq_repeats
         self.autobreak, self.fast_start, self.listen, self.fm600 = autobreak, fast_start, listen, fm600
         self.rng = random.Random(seed)
         self.on_event = on_event
         self.events: list[str] = []
+        self.trace: list[tuple] = []                     # (ms, frame, ok, session, accepted) for every frame heard
         self.received = bytearray()
         self.now = 0.0                                   # ms of audio processed
         # transmit side
@@ -179,6 +182,8 @@ class ArqStation:
                     break
                 encoded, leader = self._txq.popleft()
                 self._tx = self.phy.transmit(encoded, leader, self.trailer_ms)
+                if self.drive != 1.0:
+                    self._tx = np.round(self._tx * self.drive).astype(np.int16)
                 self._tx_pos = 0
                 if not self.ptt:
                     self.ptt = True
@@ -440,9 +445,11 @@ class ArqStation:
         # session filter: connected/pending frames must carry our session; unconnected ones 0xFF
         expected = {self.session, self.pending_session} - {0xFF}
         if self.state == "DISC":
-            if d.session != 0xFF and not (t == codec.DISC and d.session == self.last_session):
-                return
-        elif expected and d.session not in expected and not (t in CONREQ_CODES and d.session == 0xFF):
+            accept = d.session == 0xFF or (t == codec.DISC and d.session == self.last_session)
+        else:
+            accept = not expected or d.session in expected or (t in CONREQ_CODES and d.session == 0xFF)
+        self.trace.append((round(self.now), d.name, ok, d.session, accept, self.state, self.sub))
+        if not accept:
             return
         if t == codec.IDFRAME:
             if ok:
