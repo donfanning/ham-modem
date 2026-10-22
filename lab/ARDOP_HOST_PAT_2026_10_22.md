@@ -44,5 +44,18 @@ so the script seeds each mailbox's sent folder. Nothing leaves the lab network.
 
 ## Next
 
-* ARDOP across our VoIP legs and ConfBridge rooms (ardopcf via the audio hub; ham-modem on 8 kHz G.711).
+* More VoIP-leg conditions (RTP loss, IAX2, third station in the room).
 * FEC mode (PROTOCOLMODE FEC, FECSEND), summation memory ARQ, BUSY detection, 10-minute ID in long sessions.
+
+## ARDOP across the ConfBridge room (lab/ardop/confbridge_ardop_test.sh)
+
+`ham-modem --modem ardop --sip-dial 7300@172.31.73.10` (8 kHz PCMU/PCMA, resampled to ARDOP's 12 kHz by `Phy`) and
+ardopcf (UDP audio -> `lab/ardop/sip_bridge.py` -> resample 12k<->8k -> SIP leg) join the same Asterisk ConfBridge
+room 7300, each driven only through its host interface by `live_hosts.py --external-tnc`:
+
+| session | result |
+|---|---|
+| ours calls, 1500 B + 800 B, 500 Hz | both intact, 79 s, shifted up to 16QAM.500 |
+| ardopcf calls, 6000 B + 3000 B, 2000 Hz | both intact, 113 s, 13 data frames all ACKed first time, 0 repeats |
+
+So ARDOP survives G.711 companding, the PBX's room mixer and two resamplers with no RS corrections needed.

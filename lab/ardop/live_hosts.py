@@ -3,7 +3,7 @@ ardopcf-style host interface by the same client code -- what a Winlink client se
 
 Start ardopcf (lab/ardop/run_peer.sh, container ham-lab-ardopcf at 172.31.73.40) first, then:
 
-    PYTHONPATH=. .venv/bin/python lab/ardop/live_hosts.py [BYTES_A_TO_B] [BYTES_B_TO_A] [ARQBW] [CALLER]
+    PYTHONPATH=. .venv/bin/python lab/ardop/live_hosts.py [BYTES_A_TO_B] [BYTES_B_TO_A] [ARQBW] [CALLER] [--external-tnc]
 
 A is ours (K1ABC, host interface 127.0.0.1:8515, UDP audio on 172.31.73.1:7401), B is ardopcf (N0CALL). CALLER is
 "ours" (default) or "ardopcf".
@@ -70,9 +70,11 @@ def main():
     rng = np.random.default_rng(2)
     ab = bytes(rng.integers(32, 127, n_ab, dtype=np.uint8))
     ba = bytes(rng.integers(32, 127, n_ba, dtype=np.uint8))
-    tnc = subprocess.Popen([sys.executable, "-m", "hammodem.main", "--modem", "ardop", "--rate", "12000",
-                            "--udp-audio", "7401:172.31.73.40:7400", "--udp-bind", "172.31.73.1",
-                            "--ardop-host", "127.0.0.1:8515", "--mycall", "K1ABC", "--drive", "50"])
+    external = "--external-tnc" in sys.argv                           # the TNC is already running (VoIP legs)
+    tnc = None if external else subprocess.Popen(
+        [sys.executable, "-m", "hammodem.main", "--modem", "ardop", "--rate", "12000",
+         "--udp-audio", "7401:172.31.73.40:7400", "--udp-bind", "172.31.73.1",
+         "--ardop-host", "127.0.0.1:8515", "--mycall", "K1ABC", "--drive", "50"])
     t0 = time.monotonic()
     try:
         a, b = Host("ours", "127.0.0.1"), Host("ardopcf", "172.31.73.40")
@@ -103,8 +105,9 @@ def main():
               f"ardopcf->ours {len(a.rx)}/{n_ba} intact={bytes(a.rx) == ba}; "
               f"{(t_done or time.monotonic()) - t0:.0f}s to complete")
     finally:
-        tnc.terminate()
-        tnc.wait(10)
+        if tnc:
+            tnc.terminate()
+            tnc.wait(10)
 
 
 if __name__ == "__main__":
