@@ -65,6 +65,7 @@ class Receiver:
     def __init__(self, sessions: tuple[int, ...] = ()) -> None:
         self.sessions = (0xFF, *sessions)
         self._tpl = modulate._LEADER / np.linalg.norm(modulate._LEADER)
+        self.waiting: int | None = None
         self._types = sorted(codec.FRAMES)
 
     # ------------------------------------------------------------------ leader + sync
@@ -75,12 +76,17 @@ class Receiver:
         return float(np.dot(seg, self._tpl)) / (np.sqrt(e) + 1e-9) if e > 0 else 0.0
 
     def find_frame(self, x: np.ndarray, start: int = 0) -> int | None:
-        """Sample index where the frame-type symbols begin (just after the sync), or None."""
+        """Sample index where the frame-type symbols begin (just after the sync), or None. When ``x`` ends inside a
+        leader, None with ``self.waiting`` set to where it was detected (a streaming caller keeps that much)."""
+        self.waiting = None
         pos = start
         while pos + LEADER_SYM * (self.MIN_LEADER_SYMBOLS + 2) < len(x):
             if abs(self._corr(x, pos)) < self.LEADER_THRESHOLD * 0.7:
                 pos += LEADER_SYM // 8
                 continue
+            if pos + LEADER_SYM // 2 + 3 * LEADER_SYM + 2 > len(x):
+                self.waiting = pos              # streaming: wait for the whole refinement window
+                return None
             # Refine timing: the offset (within one symbol) maximising |corr| over a few symbols.
             best = max(range(pos - LEADER_SYM // 2, pos + LEADER_SYM // 2, 2),
                        key=lambda p: sum(abs(self._corr(x, p + k * LEADER_SYM)) for k in range(3)) if p >= 0 else -1)
@@ -88,7 +94,10 @@ class Receiver:
                        key=lambda p: sum(abs(self._corr(x, p + k * LEADER_SYM)) for k in range(3)) if p >= 0 else -1)
             signs = []
             p = best
-            while p + 2 * LEADER_SYM < len(x):
+            while True:
+                if p + 2 * LEADER_SYM >= len(x):
+                    self.waiting = pos          # buffer ends inside the leader
+                    return None
                 c = self._corr(x, p)
                 if abs(c) < self.LEADER_THRESHOLD:
                     break
@@ -147,17 +156,38 @@ class Receiver:
             out.append(v)
         return bytes(out), p
 
+    def body_samples(self, t: int) -> int:
+        """Samples after the frame-type symbols for frame type ``t``."""
+        info = codec.FRAMES[t]
+        if t in (codec.IDFRAME, codec.PING) or t in codec.CONREQ.values():
+            return 16 * 4 * LEADER_SYM
+        if t in codec.CONACK.values() or t == codec.PINGACK:
+            return 3 * 4 * LEADER_SYM
+        return frame_samples(info) if info.data_len else 0
+
     def decode(self, x: np.ndarray, start: int = 0) -> Decoded | None:
-        """Decode the next frame at or after ``start`` (None if there is none)."""
-        pos = self.find_frame(x, start)
-        if pos is None:
-            return None
-        t, sess, score = self.decode_type(x, pos)
-        if score < self.MIN_TYPE_SCORE:
-            return self.decode(x, pos)                                 # not a frame: keep searching after it
+        """Decode the next frame at or after ``start``: None if there is none; a Decoded with ``extra["truncated"]``
+        and ``extra["need"]`` (the buffer length required) if ``x`` ends inside it."""
+        while True:
+            pos = self.find_frame(x, start)
+            if pos is None:
+                if self.waiting is None:
+                    return None
+                return Decoded(-1, "", 0, None, False, 0, self.waiting, len(x),
+                               {"truncated": True, "need": len(x) + LEADER_SYM, "in_leader": True})
+            if pos + 10 * LEADER_SYM > len(x):
+                return Decoded(-1, "", 0, None, False, 0, pos, len(x),
+                               {"truncated": True, "need": pos + 10 * LEADER_SYM})
+            t, sess, score = self.decode_type(x, pos)
+            if score >= self.MIN_TYPE_SCORE:
+                break
+            start = pos                                                 # not a frame: keep searching after it
         info = codec.FRAMES[t]
         p = pos + 10 * LEADER_SYM
         extra = {"type_score": round(score, 3)}
+        need = p + self.body_samples(t)
+        if need > len(x):
+            return Decoded(t, info.name, sess, None, False, 0, pos, len(x), dict(extra, truncated=True, need=need))
         if info.mod in modulate.BITS:
             return self._decode_psk(x, t, info, sess, pos, p, extra)
         if t in (codec.IDFRAME, codec.PING) or t in codec.CONREQ.values():
@@ -181,8 +211,6 @@ class Receiver:
         payload = b""
         ok, fixed_total = True, 0
         nblocks, dlen, rlen = modulate.fsk_blocks(info)
-        if p + frame_samples(info) > len(x):
-            return Decoded(t, info.name, sess, None, False, 0, pos, len(x), dict(extra, truncated=True))
         for _ in range(nblocks):
             raw, p = self._fsk_bytes(x, p, dlen + 3 + rlen, info.baud)
             res = codec.rs_correct(raw, rlen)
@@ -203,8 +231,6 @@ class Receiver:
         k = np.arange(120)
         env = modulate._PSK_ENV
         end = p + (nsym + 1) * 120
-        if end > len(x):
-            return Decoded(t, info.name, sess, None, False, 0, pos, len(x), dict(extra, truncated=True))
         seg = x[p:end].reshape(nsym + 1, 120)
         payload, ok, fixed_total, qual = b"", True, 0, []
         for f in modulate.CARRIERS[info.carriers]:
