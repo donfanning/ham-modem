@@ -51,14 +51,18 @@ def main():
     ap.add_argument("--tap")
     ap.add_argument("--spacing", type=float, default=3.0, help="mean seconds between a station's frames")
     ap.add_argument("--txdelay", type=int, default=300)
+    ap.add_argument("--modem", default="afsk1200")
+    ap.add_argument("--collision-detect", action="store_true")
     ap.add_argument("--base-port", type=int, default=18100)
     args = ap.parse_args()
 
     env = dict(os.environ, PYTHONPATH=str(ROOT))
     procs, logs = [], []
     for i in range(args.stations):
-        cmd = [sys.executable, "-m", "hammodem.main", "--sip-dial", args.room,
+        cmd = [sys.executable, "-m", "hammodem.main", "--sip-dial", args.room, "--modem", args.modem,
                "--kiss-tcp", str(args.base_port + i), "--txdelay", str(args.txdelay), "--sim-loss", str(args.loss), "-m"]
+        if args.collision_detect:
+            cmd.append("--collision-detect")
         if i == 0 and args.tap:
             cmd += ["--audio-tap", args.tap]
         log = open(f"/tmp/ham-station{i}.log", "w")
@@ -96,7 +100,7 @@ def main():
             log.close()
 
     total = got = 0
-    print(f"{args.stations} stations, {args.frames} frames each, simulated loss {args.loss:.1%}")
+    print(f"{args.modem}{' CSMA/CD' if args.collision_detect else ''}: {args.stations} stations, {args.frames} frames each, simulated loss {args.loss:.1%}")
     print("receiver \\ sender  " + "  ".join(f"st{j:<4}" for j in range(args.stations)))
     for i in range(args.stations):
         row = []

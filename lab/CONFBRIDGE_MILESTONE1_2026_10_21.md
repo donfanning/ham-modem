@@ -43,3 +43,19 @@ directory name, which is the same as El-Modem's `lab/asterisk`, and our service 
 tests and PBX work. The lab now has an explicit project (`ham-modem-lab`), its own network
 (172.31.73.0/24, PBX at 172.31.73.10:5060), no host networking and no host ports. The results above were
 measured on the old host-network setup on 127.0.0.1:15060; they were re-checked on the isolated lab below.
+
+## Follow-ups (same day)
+
+**300 bd AFSK through the room** (`--modem afsk300`, 3 stations x 4 frames): 24/24.
+
+**CSMA/CD** (`--collision-detect`, finding 1 above). Implemented in `channel.py`: carrier heard while we transmit
+-> cut the burst, requeue its frames at the head of the queue, back off 1..2^k slots, drop after 8 attempts.
+
+| Test | plain CSMA | CSMA/CD |
+|---|---|---|
+| Simulation, 5 stations x 3 frames all queued at t=0, 8 seeds (zero-latency mixer) | 108/480 lost (22.5%) | 0/480 lost (11 aborts) |
+| Live room 7300, 5 stations x 6 frames, ~1.5 s spacing, run 1 | 99/120 (82.5%) | 120/120 (2 aborts) |
+| run 2 | 120/120 | 120/120 (0 aborts) |
+
+The direction is consistent, but two live pairs are not conclusive; the gain shows up when stations contend.
+It stays opt-in: on an echo leg we hear ourselves, and on a two-party call overlap is harmless (full duplex).

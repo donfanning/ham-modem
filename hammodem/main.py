@@ -103,8 +103,10 @@ class Runtime:
     def close(self) -> None:
         rtp = getattr(self.audio, "rtp", None)
         ch = self.tnc.channel
-        log.info("stats: heard %d frames (bad FCS %d), sent %d frames in %d bursts, %d busy deferrals%s",
-                 self.tnc.heard, self.tnc.demod.bad_fcs, ch.frames_sent, ch.bursts, ch.deferrals,
+        log.info("stats: heard %d frames (bad FCS %d), sent %d frames in %d bursts, %d busy deferrals, "
+                 "%d collisions (%d frames dropped)%s",
+                 self.tnc.heard, self.tnc.demod.bad_fcs, ch.frames_sent, ch.bursts, ch.deferrals, ch.collisions,
+                 ch.dropped,
                  f"; rtp {rtp.stats}" if rtp is not None else "")
         for s, _ in self.links:
             s.close()
@@ -144,6 +146,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--persist", type=int, default=63)
     ap.add_argument("--slottime", type=float, default=100, help="ms")
     ap.add_argument("--txtail", type=float, default=30, help="ms")
+    ap.add_argument("--collision-detect", action="store_true",
+                    help="CSMA/CD for conference rooms: abort and retry when another station keys up over us "
+                         "(not for echo or two-party calls)")
     ap.add_argument("--audio-tap", metavar="HOST:PORT",
                     help="copy received audio as raw s16le UDP (e.g. to Direwolf: ADEVICE udp:PORT)")
     ap.add_argument("--sim-loss", type=float, default=0.0, help=argparse.SUPPRESS)   # lab: drop received RTP
@@ -154,7 +159,7 @@ def main(argv: list[str] | None = None) -> None:
                         format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
 
     tnc = Tnc(args.modem, args.rate, txdelay=args.txdelay / 1000, persist=args.persist,
-              slottime=args.slottime / 1000, txtail=args.txtail / 1000)
+              slottime=args.slottime / 1000, txtail=args.txtail / 1000, collision_detect=args.collision_detect)
     if args.monitor:
         tnc.monitor = lambda d, text: print(f"{time.strftime('%H:%M:%S')} {d} {text}", flush=True)
 
