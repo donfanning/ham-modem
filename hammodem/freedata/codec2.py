@@ -32,7 +32,8 @@ def _load() -> ctypes.CDLL:
             ("freedv_get_n_tx_postamble_modem_samples", i, [P]), ("freedv_get_sync", i, [P]),
             ("freedv_rawdatatx", None, [P, s, b]), ("freedv_rawdatapreambletx", i, [P, s]),
             ("freedv_rawdatapostambletx", i, [P, s]), ("freedv_rawdatarx", i, [P, b, s]),
-            ("freedv_gen_crc16", ctypes.c_ushort, [b, i]), ("freedv_set_frames_per_burst", None, [P, i])):
+            ("freedv_gen_crc16", ctypes.c_ushort, [b, i]), ("freedv_set_frames_per_burst", None, [P, i]),
+            ("freedv_set_sync", None, [P, i])):
         fn = getattr(lib, name)
         fn.restype, fn.argtypes = res, args
     return lib
@@ -80,6 +81,22 @@ class Datac:
             self._f = None
 
     __del__ = close
+
+    @property
+    def frame_samples(self) -> int:
+        return self._tx_n
+
+    @property
+    def preamble_samples(self) -> int:
+        return self._pre_n
+
+    def unsync(self) -> None:
+        """Drop synchronisation so the receiver searches for the next burst (FREEDV_SYNC_UNSYNC)."""
+        self._lib.freedv_set_sync(self._f, 0)
+
+    @property
+    def sync(self) -> bool:
+        return bool(self._lib.freedv_get_sync(self._f))
 
     # ------------------------------------------------------------------ transmit
 

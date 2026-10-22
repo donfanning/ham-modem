@@ -34,3 +34,31 @@ SNR (dB in 3 kHz) at which every one of 10 frames decoded / at which at least ha
 
 (datac1 carries 510 B per frame and needs the most SNR; datac13/4 are the narrow robust modes. Fading with only a
 single frame and no repeat is the hard case; FreeDATA's ARQ layer covers it by repeating.)
+
+## 11.1 TNC modems `--modem datac0|datac1|datac3|datac4|datac13` (hammodem/modems/datac.py)
+
+AX.25 frames ride the datac chunks as our own segmentation (not FreeDATA's protocol): a 2-byte chunk header (continuation
+bit + chunk index mod 128; burst size and position), then length-prefixed AX.25 records; small frames share a chunk,
+long ones span chunks, a lost chunk costs only the frames it touches. Bursts hold at most ~12 s of chunks. Everything
+else (KISS, TNC-2, AGWPE, AX.25 connected mode, CSMA) works unchanged on top; `--repeat N` sends the transmission N
+times and the receiver drops repeats inside one transmission (1.5 s of silence ends it, so a later link-layer
+retransmission still gets through).
+
+Receiver quirk handled in the modem: codec2's burst receiver stays synchronised until it has seen the number of
+chunks it was told to expect, so a shorter burst would hide the next one (found live: a 40 B frame, then a 300 B frame
+from the same station was never heard). The chunk header tells the receiver when a burst is over, with a deadline
+as fallback; tests/test_datac_modem.py covers it.
+
+Lab (lab/freedata/confbridge_datac_test.py, two ham-modem processes in room 7300, SIP G.711, KISS-TCP hosts):
+
+| mode | 40 B info frame | 300 B info frame |
+|---|---|---|
+| datac3 | intact both ways, ~3.7 s | intact both ways, 10-11 s (1 of 3 runs needed `--repeat 2`: 20 s) |
+| datac4 | intact both ways, ~11 s | frequently lost without repeats (about half the runs); 38 s when it arrives |
+
+The datac4 losses are real VoIP-path effects, not the modem: capturing the received audio (`DATAC_LOG=prefix`) and
+correlating with the transmitted waveform shows the signal matching to the sample for the first ~27 s and then
+slipping by tens of samples (the PBX re-timing its mix); a narrow, slow OFDM frame cannot track a jump like that, and
+each chunk it hits is lost. Shorter bursts, `--repeat`, and the AX.25 layer's retransmissions limit the damage; the
+faster modes (datac3, datac1, datac0) finish a frame before the path misbehaves. Real fix, later: chunk-level
+combining across repeats.
