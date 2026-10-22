@@ -103,10 +103,10 @@ class Runtime:
     def close(self) -> None:
         rtp = getattr(self.audio, "rtp", None)
         ch = self.tnc.channel
-        log.info("stats: heard %d frames (bad FCS %d), sent %d frames in %d bursts, %d busy deferrals, "
-                 "%d collisions (%d frames dropped)%s",
-                 self.tnc.heard, self.tnc.demod.bad_fcs, ch.frames_sent, ch.bursts, ch.deferrals, ch.collisions,
-                 ch.dropped,
+        log.info("stats: heard %d frames (bad FCS %d, FX.25 repaired %d), sent %d frames in %d bursts, "
+                 "%d busy deferrals, %d collisions (%d frames dropped)%s",
+                 self.tnc.heard, self.tnc.demod.bad_fcs, getattr(self.tnc.demod, "fx25_corrected", 0),
+                 ch.frames_sent, ch.bursts, ch.deferrals, ch.collisions, ch.dropped,
                  f"; rtp {rtp.stats}" if rtp is not None else "")
         for s, _ in self.links:
             s.close()
@@ -147,6 +147,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--persist", type=int, default=63)
     ap.add_argument("--slottime", type=float, default=100, help="ms")
     ap.add_argument("--txtail", type=float, default=30, help="ms")
+    ap.add_argument("--fx25", type=int, choices=(0, 16, 32, 64), default=0,
+                    help="send frames FX.25-wrapped with this many Reed-Solomon check bytes (receive always "
+                         "accepts FX.25; plain AX.25 stations still decode FX.25 frames)")
     ap.add_argument("--collision-detect", action="store_true",
                     help="CSMA/CD for conference rooms: abort and retry when another station keys up over us "
                          "(not for echo or two-party calls)")
@@ -165,7 +168,7 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         tnc = Tnc(args.modem, args.rate, txdelay=args.txdelay / 1000, persist=args.persist,
-                  slottime=args.slottime / 1000, txtail=args.txtail / 1000, collision_detect=args.collision_detect)
+                  slottime=args.slottime / 1000, txtail=args.txtail / 1000, collision_detect=args.collision_detect, fx25=args.fx25)
     except ValueError as exc:
         ap.error(str(exc))
     if args.monitor:

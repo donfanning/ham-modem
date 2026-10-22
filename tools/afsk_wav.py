@@ -26,6 +26,7 @@ from hammodem.modems import MODEMS, make  # noqa: E402
 
 def gen(args: argparse.Namespace) -> None:
     mod, _ = make(args.modem, args.rate)
+    mod.fx25 = args.fx25
     gap = np.zeros(int(args.rate * 0.25), np.int16)
     chunks = []
     for i in range(args.count):
@@ -73,6 +74,7 @@ def main() -> None:
     g.add_argument("--count", type=int, default=100)
     g.add_argument("--src", default="N0CALL")
     g.add_argument("--txdelay", type=float, default=0.3)
+    g.add_argument("--fx25", type=int, choices=(0, 16, 32, 64), default=0, help="FX.25 check bytes (0 = off)")
     g.set_defaults(func=gen)
     d = sub.add_parser("decode")
     d.add_argument("wav")

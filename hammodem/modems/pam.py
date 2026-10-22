@@ -26,8 +26,10 @@ import math
 import numpy as np
 
 from .afsk import _Fir, lowpass_taps
-from .g3ruh import Scrambler, raised_cosine
-from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, burst_bits
+from .g3ruh import Scrambler, _dedupe, raised_cosine
+from ..fx25 import Fx25Receiver
+from ..fx25 import burst_bits as fx25_burst_bits
+from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder
 
 SPS = 5
 SQUELCH = 0.01                               # unit amplitude below which the loops hold (digital silence)
@@ -49,6 +51,7 @@ class PamModulator:
         self.fs, self.baud, self.amplitude = fs, baud, amplitude    # 3 x 0.18 + RC overshoot stays < 0.8 FS
         self.decim = _plan(baud, fs)
         self.nrzi, self.scr = NrziEncoder(), Scrambler()
+        self.fx25 = 0                       # FX.25 check bytes per frame (16/32/64), 0 = plain AX.25
         self._shape = _Fir(raised_cosine(BETA, 10, SPS))
         self._phase = 0
         self._odd: int | None = None        # a bit left over from the previous call (bursts are bit-, not pair-aligned)
@@ -74,7 +77,8 @@ class PamModulator:
 
     def modulate(self, frames: list[bytes], txdelay: float = 0.05, txtail: float = 0.01) -> np.ndarray:
         # Trailing flags flush the shaping filter and the far end's timing loop and descrambler.
-        return self.modulate_bits(burst_bits(frames, self.flags_for(txdelay), max(8, self.flags_for(txtail))))
+        return self.modulate_bits(fx25_burst_bits(frames, self.flags_for(txdelay), max(8, self.flags_for(txtail)),
+                                                  self.fx25))
 
 
 class PamDemodulator:
@@ -100,6 +104,9 @@ class PamDemodulator:
         self.desc_state = 0
         self.nrzi = NrziDecoder()
         self.hdlc = HdlcDecoder()
+        self.fx25 = Fx25Receiver()
+        self._recent: dict[bytes, int] = {}
+        self._bits_seen = 0
         self.energy_dcd_dbfs = energy_dcd_dbfs
         self.energy_busy = False
         self.frames = 0
@@ -204,5 +211,9 @@ class PamDemodulator:
             frame = push(d)
             if frame is not None:
                 out.append(frame)
-                self.frames += 1
-        return out
+        out += self.fx25.feed_bits(data)
+        return _dedupe(self, out, len(data))
+
+    @property
+    def fx25_corrected(self) -> int:
+        return self.fx25.corrected

@@ -21,6 +21,7 @@ Design, research notes and phases: [docs/PLAN.md](docs/PLAN.md).
 | G3RUH 9600 bd (`--modem g3ruh9600`, L16/16 kHz legs, room 7316) | done; Direwolf interop both ways, 48/48 through the 16 kHz ConfBridge ([lab note](lab/G3RUH_9600_2026_10_21.md)) |
 | G3RUH 19200 / 38400 bd (`--modem g3ruh19200` / `g3ruh38400`, L16/48 kHz legs, room 7348) | done; 19200 interoperates with Direwolf; live 48/48 in the 48 kHz room with CSMA/CD ([lab note](lab/G3RUH_FAST_2026_10_21.md)) |
 | PAM-4 57.6 kbit/s VoIP-native mode (`--modem pam57600`, 48 kHz legs; `pam19200` on 16 kHz) | done; live 48/48 in room 7348, 96.7% at 3% RTP loss vs 58% for AFSK 1200 ([lab note](lab/PAM4_57600_2026_10_21.md)) |
+| FX.25 FEC (`--fx25 16/32/64`; receive always on), Direwolf-compatible | done; interop both ways under damage; 1200 bd at 3% loss: 50% -> 96.7% ([lab note](lab/FX25_2026_10_21.md)) |
 | CSMA/CD for rooms (`--collision-detect`) | done, opt-in |
 
 ## Try it

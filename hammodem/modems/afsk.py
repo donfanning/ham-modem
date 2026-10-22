@@ -21,7 +21,9 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, burst_bits
+from ..fx25 import Fx25Receiver
+from ..fx25 import burst_bits as fx25_burst_bits
+from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder
 
 
 @dataclass(frozen=True)
@@ -78,6 +80,7 @@ class AfskModulator:
     def __init__(self, profile: AfskProfile = BELL202, fs: int = 8000, amplitude: float = 0.5) -> None:
         self.p, self.fs, self.amplitude = profile, fs, amplitude
         self.nrzi = NrziEncoder()
+        self.fx25 = 0                     # FX.25 check bytes per frame (16/32/64), 0 = plain AX.25
         self.phase = 0.0
         self.bits_sent = 0                # bit k starts at sample k * fs / baud, kept exact in integers
         self.samples_sent = 0
@@ -102,14 +105,14 @@ class AfskModulator:
         return np.round(np.sin(phase) * self.amplitude * 32767).astype(np.int16)
 
     def modulate(self, frames: list[bytes], txdelay: float = 0.3, txtail: float = 0.03) -> np.ndarray:
-        bits = burst_bits(frames, self.flags_for(txdelay), self.flags_for(txtail))
+        bits = fx25_burst_bits(frames, self.flags_for(txdelay), self.flags_for(txtail), self.fx25)
         return self.modulate_bits(bits)
 
 
 class _Slicer:
     """One decision threshold: PLL bit clock, NRZI decoder, HDLC receiver and a carrier-quality score."""
 
-    __slots__ = ("gain", "phase", "prev", "nrzi", "hdlc", "quality", "run")
+    __slots__ = ("gain", "phase", "prev", "nrzi", "hdlc", "fx25", "quality", "run")
 
     def __init__(self, gain: float) -> None:
         self.gain = gain
@@ -117,6 +120,7 @@ class _Slicer:
         self.prev = 0
         self.nrzi = NrziDecoder()
         self.hdlc = HdlcDecoder()
+        self.fx25 = Fx25Receiver()
         self.quality = 0.0
         self.run = 0                      # bits since the last transition
 
@@ -186,9 +190,22 @@ class AfskDemodulator:
             self._recent = {k: v for k, v in self._recent.items() if v > horizon}
         return out
 
+    def _emit(self, frame: bytes, when: int, out: list[bytes]) -> None:
+        """Report a frame once, whichever slicer -- or the plain/FX.25 path -- decoded it first."""
+        seen = self._recent.get(frame)
+        if seen is None or when - seen > self.fs:
+            out.append(frame)
+            self.frames += 1
+        self._recent[frame] = when
+
+    @property
+    def fx25_corrected(self) -> int:
+        return max(s.fx25.corrected for s in self.slicers)
+
     def _run(self, s: _Slicer, levels: list[bool], base: int, out: list[bytes]) -> None:
         step, prev, phase, quality, run = self.step, s.prev, s.phase, s.quality, s.run
         nrzi, hdlc = s.nrzi, s.hdlc
+        bits: list[int] = []
         for i, level in enumerate(levels):
             level = 1 if level else 0
             if level != prev:
@@ -203,12 +220,11 @@ class AfskDemodulator:
                 run += 1
                 if run > 7:                   # bit stuffing caps NRZI runs at 7 bits: no packet signal here
                     quality = max(-1.0, quality - 0.1)
-                frame = hdlc.push(nrzi.decode(level))
+                bit = nrzi.decode(level)
+                bits.append(bit)
+                frame = hdlc.push(bit)
                 if frame is not None:
-                    when = base + i
-                    seen = self._recent.get(frame)
-                    if seen is None or when - seen > self.fs:
-                        out.append(frame)
-                        self.frames += 1
-                    self._recent[frame] = when
+                    self._emit(frame, base + i, out)
         s.prev, s.phase, s.quality, s.run = prev, phase, max(-1.0, min(1.0, quality)), run
+        for frame in s.fx25.feed_bits(bits):
+            self._emit(frame, base + len(levels), out)

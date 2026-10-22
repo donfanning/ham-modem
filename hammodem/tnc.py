@@ -39,8 +39,10 @@ class KissEndpoint:
 
 
 class Tnc:
-    def __init__(self, modem: str = "afsk1200", fs: int = 8000, clock=time.monotonic, **channel_args) -> None:
+    def __init__(self, modem: str = "afsk1200", fs: int = 8000, clock=time.monotonic, fx25: int = 0,
+                 **channel_args) -> None:
         mod, self.demod = modems.make(modem, fs)
+        mod.fx25 = fx25                          # FX.25 check bytes on transmit; receive always accepts FX.25
         self.modem = modem
         self.fs = fs
         self.clock = clock                       # protocol timers (AX.25, beacons); tests pass simulated time

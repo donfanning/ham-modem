@@ -20,7 +20,9 @@ import math
 import numpy as np
 
 from .afsk import _Fir, lowpass_taps
-from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, burst_bits
+from ..fx25 import Fx25Receiver
+from ..fx25 import burst_bits as fx25_burst_bits
+from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder
 
 SPS = 5                                 # internal samples per symbol
 BAUDS = (9600, 19200, 38400)
@@ -49,6 +51,21 @@ def raised_cosine(beta: float, span: int, sps: int) -> np.ndarray:
     return h
 
 
+def _dedupe(dem, frames: list[bytes], nbits: int) -> list[bytes]:
+    """Drop a frame decoded twice (plain HDLC and FX.25 both see an FX.25 frame) within ~2 frame lengths."""
+    out = []
+    for f in frames:
+        seen = dem._recent.get(f)
+        if seen is None or dem._bits_seen - seen > 8 * 4096:
+            out.append(f)
+            dem.frames += 1
+        dem._recent[f] = dem._bits_seen
+    dem._bits_seen += nbits
+    if len(dem._recent) > 64:
+        dem._recent = {k: v for k, v in dem._recent.items() if dem._bits_seen - v < 8 * 4096}
+    return out
+
+
 class Scrambler:
     """Direwolf's ``scramble``: out = in ^ s[16] ^ s[11], output shifted into the state."""
 
@@ -70,6 +87,7 @@ class G3ruhModulator:
         self.fs, self.baud, self.amplitude = fs, baud, amplitude
         _, self.decim, beta = plan(baud, fs)
         self.nrzi, self.scr = NrziEncoder(), Scrambler()
+        self.fx25 = 0                      # FX.25 check bytes per frame (16/32/64), 0 = plain AX.25
         self._shape = _Fir(raised_cosine(beta, 8, SPS))
         self._phase = 0                    # decimation phase carried across bursts
 
@@ -88,7 +106,8 @@ class G3ruhModulator:
 
     def modulate(self, frames: list[bytes], txdelay: float = 0.1, txtail: float = 0.01) -> np.ndarray:
         # A few trailing flags flush the shaping filter and let the far scrambler/PLL finish the last frame.
-        return self.modulate_bits(burst_bits(frames, self.flags_for(txdelay), max(3, self.flags_for(txtail))))
+        return self.modulate_bits(fx25_burst_bits(frames, self.flags_for(txdelay), max(3, self.flags_for(txtail)),
+                                                  self.fx25))
 
 
 class G3ruhDemodulator:
@@ -118,6 +137,9 @@ class G3ruhDemodulator:
         self.desc_state = 0
         self.nrzi = NrziDecoder()
         self.hdlc = HdlcDecoder()
+        self.fx25 = Fx25Receiver()
+        self._recent: dict[bytes, int] = {}
+        self._bits_seen = 0
         self.energy_dcd_dbfs = energy_dcd_dbfs
         self.energy_busy = False
         self.frames = 0
@@ -146,8 +168,13 @@ class G3ruhDemodulator:
         self._dc_hist = buf[-self._dc_win:]
         return self._run((y - mean[-len(y):] > 0).tolist())
 
+    @property
+    def fx25_corrected(self) -> int:
+        return self.fx25.corrected
+
     def _run(self, levels: list[bool]) -> list[bytes]:
         out: list[bytes] = []
+        bits: list[int] = []
         step, prev, phase, quality, run, ds = self.step, self.prev, self.phase, self.quality, self.run, self.desc_state
         nrzi, hdlc = self.nrzi, self.hdlc
         for level in levels:
@@ -165,10 +192,12 @@ class G3ruhDemodulator:
                     quality = max(-1.0, quality - 0.1)
                 bit = (level ^ (ds >> 16) ^ (ds >> 11)) & 1
                 ds = ((ds << 1) | level) & 0x1FFFF
-                frame = hdlc.push(nrzi.decode(bit))
+                d = nrzi.decode(bit)
+                bits.append(d)
+                frame = hdlc.push(d)
                 if frame is not None:
                     out.append(frame)
-                    self.frames += 1
         self.prev, self.phase, self.quality, self.run, self.desc_state = (
             prev, phase, max(-1.0, min(1.0, quality)), run, ds)
-        return out
+        out += self.fx25.feed_bits(bits)
+        return _dedupe(self, out, len(bits))
