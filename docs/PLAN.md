@@ -175,11 +175,12 @@ Phases are ordered by value. The first is a prerequisite for every HF protocol a
 - **Naming.** Do not use vendor trademarks as mode names ("PACTOR" is SCS's, "VARA" is EA5HVK's); describe compatibility instead.
 - **Prerequisites.** Real modems or link recordings are needed for the ARQ layers. Without them the waveform can be built, but handshake timing is guesswork. Open question for the user: is HAL/SCS hardware or recordings available?
 
-### Open decisions for the user
+### Decisions (user, 2026-10-22)
 
-1. After the channel simulator (phase 8): start with phase 9 (small, open) or go straight to ARDOP (phase 10) for Winlink?
-2. Is HAL/SCS hardware or recordings of real links available for phase 15?
-3. Which NET/ROM / kernel-app features to capture (phase 16)?
+1. Order: channel simulator (8), then the small open modes (9), working up to ARDOP (10).
+2. No HAL/SCS hardware or recordings are available: for phase 15, search online for recordings (sigidwiki and
+   similar archives) and work from published papers.
+3. NET/ROM / kernel-app scope (16): deferred; ask when we get there.
 
 ## Verification
 - `python -m unittest discover tests` covers the codecs (KISS, AX.25, HDLC/NRZI/FCS), modem round-trips with impairments, and the CSMA logic.
