@@ -19,7 +19,7 @@ import time
 
 from .agw import AgwServer
 from .kiss_tcp import KissTcpServer
-from .modems.afsk import PROFILES
+from .modems import MODEMS
 from .serial import DeviceSerial, PtySerial
 from .tnc import Tnc
 from .audio.rtp import CODECS
@@ -117,8 +117,8 @@ class Runtime:
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="ham-modem", description="AX.25 packet TNC over VoIP audio")
-    ap.add_argument("--modem", choices=PROFILES, default="afsk1200")
-    ap.add_argument("--rate", type=int, default=8000, help="audio sample rate (default 8000)")
+    ap.add_argument("--modem", choices=MODEMS, default="afsk1200")
+    ap.add_argument("--rate", type=int, help="audio sample rate (default 8000; 16000 for g3ruh9600)")
     ap.add_argument("--kiss-pty", action="append", default=[], metavar="PATH",
                     help="create a pty speaking KISS, symlinked at PATH (repeatable)")
     ap.add_argument("--serial", action="append", default=[], metavar="DEV[:BAUD]",
@@ -155,11 +155,19 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("-m", "--monitor", action="store_true", help="print frames heard and sent")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
+    wide = args.modem == "g3ruh9600"
+    if args.rate is None:
+        args.rate = 16000 if wide else 8000
+    if args.codec is None:
+        args.codec = ["l16-16k"] if args.rate == 16000 else ["pcmu", "pcma"]
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
 
-    tnc = Tnc(args.modem, args.rate, txdelay=args.txdelay / 1000, persist=args.persist,
-              slottime=args.slottime / 1000, txtail=args.txtail / 1000, collision_detect=args.collision_detect)
+    try:
+        tnc = Tnc(args.modem, args.rate, txdelay=args.txdelay / 1000, persist=args.persist,
+                  slottime=args.slottime / 1000, txtail=args.txtail / 1000, collision_detect=args.collision_detect)
+    except ValueError as exc:
+        ap.error(str(exc))
     if args.monitor:
         tnc.monitor = lambda d, text: print(f"{time.strftime('%H:%M:%S')} {d} {text}", flush=True)
 
@@ -167,7 +175,7 @@ def main(argv: list[str] | None = None) -> None:
         lport, _, peer = args.udp_audio.partition(":")
         audio = UdpAudio(("0.0.0.0", int(lport)), _hostport(peer) if peer else None, args.rate)
     else:
-        codecs = [CODECS[c] for c in (args.codec or ["pcmu", "pcma"])]
+        codecs = [CODECS[c] for c in args.codec]
         if any(c.rate != args.rate for c in codecs):
             ap.error(f"--rate {args.rate} does not match the codec rate(s) {sorted({c.rate for c in codecs})}")
         audio = SipLeg(dial=args.sip_dial, listen=args.sip_listen, codecs=codecs, local_ip=args.local_ip,

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate or decode AFSK packet audio as WAV files (offline benchmark and Direwolf interop).
+"""Generate or decode packet-modem audio (AFSK 1200/300, G3RUH 9600) as WAV files (offline benchmark and Direwolf interop).
 
     afsk_wav.py gen out.wav [--modem afsk1200] [--rate 8000] [--count 100]
     afsk_wav.py decode in.wav [--modem afsk1200] [-v]
@@ -21,11 +21,11 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from hammodem.ax25 import Ax25Error, Frame  # noqa: E402
-from hammodem.modems.afsk import PROFILES, AfskDemodulator, AfskModulator  # noqa: E402
+from hammodem.modems import MODEMS, make  # noqa: E402
 
 
 def gen(args: argparse.Namespace) -> None:
-    mod = AfskModulator(PROFILES[args.modem], args.rate)
+    mod, _ = make(args.modem, args.rate)
     gap = np.zeros(int(args.rate * 0.25), np.int16)
     chunks = []
     for i in range(args.count):
@@ -45,7 +45,7 @@ def decode(args: argparse.Namespace) -> None:
             sys.exit("only 16-bit PCM WAV is supported")
         rate, channels = w.getframerate(), w.getnchannels()
         pcm = np.frombuffer(w.readframes(w.getnframes()), "<i2")[::channels]
-    dem = AfskDemodulator(PROFILES[args.modem], rate)
+    _, dem = make(args.modem, rate)
     block = rate // 50
     count = 0
     t = time.perf_counter()
@@ -68,7 +68,7 @@ def main() -> None:
     sub = ap.add_subparsers(dest="cmd", required=True)
     g = sub.add_parser("gen")
     g.add_argument("wav")
-    g.add_argument("--modem", choices=PROFILES, default="afsk1200")
+    g.add_argument("--modem", choices=MODEMS, default="afsk1200")
     g.add_argument("--rate", type=int, default=8000)
     g.add_argument("--count", type=int, default=100)
     g.add_argument("--src", default="N0CALL")
@@ -76,7 +76,7 @@ def main() -> None:
     g.set_defaults(func=gen)
     d = sub.add_parser("decode")
     d.add_argument("wav")
-    d.add_argument("--modem", choices=PROFILES, default="afsk1200")
+    d.add_argument("--modem", choices=MODEMS, default="afsk1200")
     d.add_argument("-v", "--verbose", action="store_true")
     d.set_defaults(func=decode)
     args = ap.parse_args()

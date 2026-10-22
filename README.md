@@ -18,7 +18,8 @@ Design, research notes and phases: [docs/PLAN.md](docs/PLAN.md).
 | AX.25 v2.0 connected mode (mod 8, REJ/poll recovery, digipeater paths), TNC-2 command mode (`--tnc2-pty`), AGWPE server (`--agw`) | done; live TNC-2 <-> AGWPE session through the ConfBridge ([lab note](lab/CONNECTED_MODE_2026_10_21.md)) |
 | SIP (dial / listen, digest), RTP (PCMU/PCMA/L16, loss concealment), Asterisk ConfBridge lab | **milestone 1 reached**: 3 stations in a ConfBridge, Direwolf monitoring ([lab note](lab/CONFBRIDGE_MILESTONE1_2026_10_21.md)) |
 | IAX2 leg | not yet (El-Modem's Rust `iax2` binding to port) |
-| G3RUH 9600 over L16/16 kHz | phase 6 |
+| G3RUH 9600 bd (`--modem g3ruh9600`, L16/16 kHz legs, room 7316) | done; Direwolf interop both ways, 48/48 through the 16 kHz ConfBridge ([lab note](lab/G3RUH_9600_2026_10_21.md)) |
+| CSMA/CD for rooms (`--collision-detect`) | done, opt-in |
 
 ## Try it
 
@@ -34,6 +35,8 @@ export PYTHONPATH=$PWD
 
 A dumb-terminal user: `--tnc2-pty ~/.ham-tnc2 --mycall N0CALL`, then `minicom -D ~/.ham-tnc2` / `screen ~/.ham-tnc2`
 and type `C K1ABC` at the `cmd:` prompt. AGWPE clients: `--agw 8000`.
+
+9600 bd: `--modem g3ruh9600 --sip-dial 7316@172.31.73.10` (16 kHz room; 8 kHz G.711 legs are refused).
 
 Point-to-point (no PBX): one station runs `--sip-listen --sip-port 5070`, the other `--sip-dial x@HOST:5070`.
 

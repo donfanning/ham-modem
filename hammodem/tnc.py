@@ -15,7 +15,7 @@ import numpy as np
 from . import kiss
 from .ax25 import Ax25Error, Frame
 from .channel import Channel
-from .modems.afsk import PROFILES, AfskDemodulator, AfskModulator
+from . import modems
 
 log = logging.getLogger("hammodem.tnc")
 
@@ -40,11 +40,11 @@ class KissEndpoint:
 
 class Tnc:
     def __init__(self, modem: str = "afsk1200", fs: int = 8000, clock=time.monotonic, **channel_args) -> None:
-        profile = PROFILES[modem]
+        mod, self.demod = modems.make(modem, fs)
+        self.modem = modem
         self.fs = fs
         self.clock = clock                       # protocol timers (AX.25, beacons); tests pass simulated time
-        self.demod = AfskDemodulator(profile, fs)
-        self.channel = Channel(AfskModulator(profile, fs), fs, **channel_args)
+        self.channel = Channel(mod, fs, **channel_args)
         self.endpoints: list = []                # KissEndpoint / Tnc2Terminal: deliver(frame), feed(bytes)
         self.monitor = None                     # callable(direction, frame_bytes) for logging/TUI
         self.heard = 0
