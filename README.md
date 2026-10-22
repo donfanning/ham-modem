@@ -14,11 +14,25 @@ Design, research notes and phases: [docs/PLAN.md](docs/PLAN.md).
 |---|---|
 | HDLC / NRZI / FCS, AX.25 frame codec, KISS codec | done, unit-tested |
 | AFSK 1200 / 300 modulator + demodulator (slicer bank, PLL, DCD) | done; interoperates with Direwolf both ways ([lab note](lab/AFSK_BASELINE_2026_10_21.md)) |
-| CSMA channel, KISS pty/TCP, TNC-2, AGWPE | next (phases 2 and 4) |
+| CSMA channel (p-persist, DCD from timing quality + in-band energy), KISS pty / tty / TCP | done; live test through `tools/audio_hub.py` with Direwolf monitoring |
+| TNC-2 command mode, AX.25 connected mode, AGWPE | phase 4 |
 | RTP/SIP/IAX2 + ConfBridge lab | phase 3 |
 | G3RUH 9600 over L16/16 kHz | phase 6 |
 
 ## Try it
+
+Two TNCs on a local stand-in for a conference bridge (raw PCM over UDP), Direwolf-compatible:
+
+```sh
+export PYTHONPATH=$PWD
+.venv/bin/python tools/audio_hub.py --port 7300 &                       # the "frequency"
+.venv/bin/python -m hammodem.main --udp-audio 7401:127.0.0.1:7300 --kiss-tcp 8001 -m &
+.venv/bin/python -m hammodem.main --udp-audio 7402:127.0.0.1:7300 --kiss-pty ~/.ham-modem1 -m &
+.venv/bin/python tools/kiss_tool.py --dev ~/.ham-modem1 listen &
+.venv/bin/python tools/kiss_tool.py --tcp 127.0.0.1:8001 send N0CALL APRS ">hello"
+```
+
+`kissattach ~/.ham-modem1 radio` (Linux AX.25 tools) works on the pty the same way. Offline:
 
 ```sh
 python3 -m venv .venv && .venv/bin/pip install numpy

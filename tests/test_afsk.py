@@ -73,13 +73,25 @@ class AfskTest(unittest.TestCase):
         self.assertLess(np.max(np.abs(np.diff(a))), 0.5 * 32767 * 2 * np.pi * 2200 / 8000 * 1.01)
         self.assertEqual(len(a), round(30 * 7 * 8000 / 1200))
 
-    def test_dcd(self):
-        dem = AfskDemodulator(BELL202)
+    def test_dcd_quality(self):
+        dem = AfskDemodulator(BELL202, energy_dcd_dbfs=None)
         dem.feed(impair.to_pcm(np.random.default_rng(1).normal(0, 3000, 8000)))
         self.assertFalse(dem.dcd)
         mod = AfskModulator(BELL202)
         dem.feed(mod.modulate_bits([0, 1, 1, 1, 1, 1, 1, 0] * 40))
         self.assertTrue(dem.dcd)
+        dem.feed(np.zeros(800, np.int16))
+        self.assertFalse(dem.dcd, "DCD must drop when the signal stops")
+
+    def test_dcd_energy(self):
+        dem = AfskDemodulator(BELL202)
+        dem.feed(np.zeros(160, np.int16))
+        self.assertFalse(dem.dcd)
+        dem.feed(AfskModulator(BELL202).modulate_bits([0, 1, 1, 1, 1, 1, 1, 0] * 3)[:160])
+        self.assertTrue(dem.dcd, "in-band energy is busy within one block")
+        dem.feed(np.zeros(160, np.int16))
+        dem.feed(np.zeros(800, np.int16))
+        self.assertFalse(dem.dcd)
 
     def test_realtime_margin(self):
         audio = impair.to_pcm(transmit(BELL202, make_frames(5)))

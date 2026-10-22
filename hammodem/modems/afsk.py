@@ -109,7 +109,7 @@ class AfskModulator:
 class _Slicer:
     """One decision threshold: PLL bit clock, NRZI decoder, HDLC receiver and a carrier-quality score."""
 
-    __slots__ = ("gain", "phase", "prev", "nrzi", "hdlc", "quality")
+    __slots__ = ("gain", "phase", "prev", "nrzi", "hdlc", "quality", "run")
 
     def __init__(self, gain: float) -> None:
         self.gain = gain
@@ -118,6 +118,7 @@ class _Slicer:
         self.nrzi = NrziDecoder()
         self.hdlc = HdlcDecoder()
         self.quality = 0.0
+        self.run = 0                      # bits since the last transition
 
 
 class AfskDemodulator:
@@ -127,8 +128,13 @@ class AfskDemodulator:
     INERTIA_SEARCH = 0.50
     DCD_THRESHOLD = 0.4
 
-    def __init__(self, profile: AfskProfile = BELL202, fs: int = 8000) -> None:
+    def __init__(self, profile: AfskProfile = BELL202, fs: int = 8000, energy_dcd_dbfs: float | None = -45.0) -> None:
+        """``energy_dcd_dbfs``: also report DCD whenever in-band power exceeds this level. A VoIP channel idles at
+        digital silence, so this reacts within one block (the quality score needs ~40 ms) and treats speech in
+        the bridge as busy. Use None on a noisy RF-like channel."""
         self.p, self.fs = profile, fs
+        self.energy_dcd_dbfs = energy_dcd_dbfs
+        self.energy_busy = False
         spb = fs / profile.baud
         self.step = 2.0 * profile.baud / fs
         lo, hi = profile.bandpass
@@ -152,7 +158,7 @@ class AfskDemodulator:
     @property
     def dcd(self) -> bool:
         # Transition-timing quality: noise sits below 0 and packet audio, even at a few dB SNR, above 0.5.
-        return any(s.quality > self.DCD_THRESHOLD for s in self.slicers)
+        return self.energy_busy or any(s.quality > self.DCD_THRESHOLD for s in self.slicers)
 
     @property
     def bad_fcs(self) -> int:
@@ -162,6 +168,8 @@ class AfskDemodulator:
         if isinstance(pcm, (bytes, bytearray, memoryview)):
             pcm = np.frombuffer(pcm, dtype="<i2")
         x = self._bp(np.asarray(pcm, dtype=np.float64) / 32768.0)
+        if self.energy_dcd_dbfs is not None and len(x):
+            self.energy_busy = 10 * np.log10(np.mean(x * x) * 2 + 1e-12) > self.energy_dcd_dbfs
         n = np.arange(self._n, self._n + len(x))
         self._n += len(x)
         mark = np.abs(self._mark_lp(x * np.exp(-1j * ((self._wm * n) % (2 * np.pi)))))
@@ -179,7 +187,7 @@ class AfskDemodulator:
         return out
 
     def _run(self, s: _Slicer, levels: list[bool], base: int, out: list[bytes]) -> None:
-        step, prev, phase, quality = self.step, s.prev, s.phase, s.quality
+        step, prev, phase, quality, run = self.step, s.prev, s.phase, s.quality, s.run
         nrzi, hdlc = s.nrzi, s.hdlc
         for i, level in enumerate(levels):
             level = 1 if level else 0
@@ -188,9 +196,13 @@ class AfskDemodulator:
                 quality = quality * 0.96 + (0.04 if abs(phase) < 0.35 else -0.04)
                 phase *= self.INERTIA_LOCKED if hdlc.active else self.INERTIA_SEARCH
                 prev = level
+                run = 0
             phase += step
             if phase >= 1.0:
                 phase -= 2.0
+                run += 1
+                if run > 7:                   # bit stuffing caps NRZI runs at 7 bits: no packet signal here
+                    quality = max(-1.0, quality - 0.1)
                 frame = hdlc.push(nrzi.decode(level))
                 if frame is not None:
                     when = base + i
@@ -199,4 +211,4 @@ class AfskDemodulator:
                         out.append(frame)
                         self.frames += 1
                     self._recent[frame] = when
-        s.prev, s.phase, s.quality = prev, phase, max(-1.0, min(1.0, quality))
+        s.prev, s.phase, s.quality, s.run = prev, phase, max(-1.0, min(1.0, quality)), run
