@@ -50,3 +50,28 @@ class ArdopCodecTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ArdopModulateTest(unittest.TestCase):
+    """Structure checks; interop is verified against ardopcf --decodewav (lab/ARDOP_*.md)."""
+
+    def test_frame_lengths(self):
+        from hammodem.ardop import modulate as m
+        e, _ = codec.mode_codes("4FSK.200.50S")
+        enc = m.encode_fsk_data(e, b"x" * 10, 0xFF)
+        self.assertEqual(len(enc), 2 + 1 + 16 + 2 + 4)            # type x2, count, 16 data, CRC, 4 RS
+        x = m.modulate_4fsk(enc, leader_ms=240, trailer_ms=20)
+        # leader 12 symbols + 10 type symbols + 23 bytes * 4 symbols, all 240 samples, + 20 ms trailer
+        self.assertEqual(len(x), (12 + 10 + 23 * 4) * 240 + 240)
+        self.assertEqual(len(m.encode_conreq("N0CALL", "K1ABC", "500M")), 18)
+
+    def test_data_block_crc_and_rs(self):
+        from hammodem.ardop import modulate as m
+        e, _ = codec.mode_codes("4FSK.500.100S")
+        enc = m.encode_fsk_data(e, b"hello", 0x5A)
+        self.assertEqual(enc[:2], bytes((e, e ^ 0x5A)))
+        block, count = codec.rs_correct(enc[2:], 8)
+        self.assertEqual(count, 0)
+        self.assertTrue(codec.check_crc(block, e))
+        self.assertEqual(block[0], 5)
+        self.assertEqual(block[1:6], b"hello")
