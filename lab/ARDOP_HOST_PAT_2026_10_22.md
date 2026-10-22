@@ -104,3 +104,19 @@ Offline (tests/test_ardop_fec.py): one sender, two listeners; 4% block loss with
 * Tests: tests/test_ardop_busy.py (carrier trips and holds, BUSYDET 0, rejection of a call into a busy channel, ID
   during a session with the interval shortened). Live regression against ardopcf, 1000 B + 500 B, both callers: intact.
   The 10-minute interval itself was not run live (would need a 10-minute session).
+
+## IAX2 leg and a third station in the room (lab/ardop/room_third.py, confbridge_ardop_test.sh)
+
+Same room 7300 setup as above (ours on the PBX leg, ardopcf through `sip_bridge.py`), 500 Hz; `LEG=iax` puts our TNC on
+an IAX2 (µ-law) leg, `THIRD_MODE=monitor|jam` adds a third SIP participant:
+
+| run | result |
+|---|---|
+| ours on **IAX2**, 1000 B + 600 B | both intact, 62 s |
+| third station **monitoring** (decodes the mix, never transmits), 800 B + 400 B | both intact, 51 s; the monitor decoded 27 frames of the session (ConReq/ConAck, 4PSK/8PSK data both ways, ACKs, IDLE, DISC/END, ID) after learning the session ID from the ConReq |
+| third station **jamming**, 1500 Hz carrier 2 s every 15 s | both intact (1500 B + 800 B), 85 s, 1 repeat and 1 NAK |
+| third station jamming with **noise** bursts, same schedule | both intact, 78 s |
+
+Like on RF, the room mixes the interferer with whoever is sending; ARQ rides out bursts with repeats. (One noise run
+started right after a previous run produced no result: the new TNC could not take the host ports while the old one was
+still closing. Waiting a few seconds between runs avoids it.)
