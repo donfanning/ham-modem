@@ -22,13 +22,13 @@ Design, research notes and phases: [docs/PLAN.md](docs/PLAN.md).
 
 ## Try it
 
-Through a real Asterisk conference room (the lab PBX binds only to loopback):
+Through a real Asterisk conference room (the lab PBX lives on its own Docker network, 172.31.73.10, and binds nothing on the host):
 
 ```sh
 (cd lab/asterisk && docker compose up -d)
 export PYTHONPATH=$PWD
-.venv/bin/python -m hammodem.main --sip-dial 7300@127.0.0.1:15060 --local-ip 127.0.0.1 --kiss-tcp 8001 -m &
-.venv/bin/python -m hammodem.main --sip-dial 7300@127.0.0.1:15060 --local-ip 127.0.0.1 --kiss-pty ~/.ham-modem1 -m &
+.venv/bin/python -m hammodem.main --sip-dial 7300@172.31.73.10 --kiss-tcp 8001 -m &
+.venv/bin/python -m hammodem.main --sip-dial 7300@172.31.73.10 --kiss-pty ~/.ham-modem1 -m &
 .venv/bin/python lab/confbridge_test.py --stations 3 --frames 10 [--loss 0.03]   # delivery matrix
 ```
 

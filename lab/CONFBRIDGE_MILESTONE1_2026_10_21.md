@@ -34,3 +34,12 @@ station's own audio (no station ever decoded its own frames).
    TXDELAY bought nothing. The levers are FEC (FX.25 / IL2P, plan phase 7 -- consider moving it earlier),
    shorter PACLEN, and connected-mode retries (phase 4).
 3. Energy DCD makes CSMA work across the bridge (deferrals counted in every run; 8-28 per station).
+
+## Addendum: lab isolation incident
+
+The first version of `lab/asterisk/compose.yaml` had no project name. Compose derived `asterisk` from the
+directory name, which is the same as El-Modem's `lab/asterisk`, and our service was also called `asterisk`.
+`docker compose up -d` therefore recreated El-Modem's `asterisk-asterisk-1` as our PBX, which broke El-Modem's
+tests and PBX work. The lab now has an explicit project (`ham-modem-lab`), its own network
+(172.31.73.0/24, PBX at 172.31.73.10:5060), no host networking and no host ports. The results above were
+measured on the old host-network setup on 127.0.0.1:15060; they were re-checked on the isolated lab below.

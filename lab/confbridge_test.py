@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Milestone-1 harness: N ham-modem stations in an Asterisk ConfBridge room exchanging UI frames over KISS-TCP.
 
-    lab/confbridge_test.py [--stations 3] [--frames 10] [--loss 0.0] [--room 7300@127.0.0.1:15060]
+    lab/confbridge_test.py [--stations 3] [--frames 10] [--loss 0.0] [--room 7300@172.31.73.10]
                            [--tap 127.0.0.1:7355]    # station 0's received audio to a Direwolf monitor
 
 Every station sends ``--frames`` frames at random times; every other station should hear each one. Prints the
@@ -47,7 +47,7 @@ def main():
     ap.add_argument("--stations", type=int, default=3)
     ap.add_argument("--frames", type=int, default=10)
     ap.add_argument("--loss", type=float, default=0.0, help="simulated receive RTP loss at every station")
-    ap.add_argument("--room", default="7300@127.0.0.1:15060")
+    ap.add_argument("--room", default="7300@172.31.73.10")
     ap.add_argument("--tap")
     ap.add_argument("--spacing", type=float, default=3.0, help="mean seconds between a station's frames")
     ap.add_argument("--txdelay", type=int, default=300)
@@ -57,7 +57,7 @@ def main():
     env = dict(os.environ, PYTHONPATH=str(ROOT))
     procs, logs = [], []
     for i in range(args.stations):
-        cmd = [sys.executable, "-m", "hammodem.main", "--sip-dial", args.room, "--local-ip", "127.0.0.1",
+        cmd = [sys.executable, "-m", "hammodem.main", "--sip-dial", args.room,
                "--kiss-tcp", str(args.base_port + i), "--txdelay", str(args.txdelay), "--sim-loss", str(args.loss), "-m"]
         if i == 0 and args.tap:
             cmd += ["--audio-tap", args.tap]
