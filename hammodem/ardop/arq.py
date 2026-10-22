@@ -48,6 +48,7 @@ CONACK_CODES = {v: k for k, v in codec.CONACK.items()}
 REPLY_DELAY_MS = 250          # ardopcf waits this long after a decode before answering
 PENDING_TIMEOUT_MS = 10_000   # IRS: ConAck sent, waiting for the caller's ConAck
 FINAL_ID_MS = 3000
+DISC_FALLBACK_MS = 6000       # pending DISCONNECT with nothing heard for this long: send DISC anyway
 
 
 def is_data(t: int) -> bool:
@@ -77,7 +78,8 @@ class ArqStation:
                  leader_ms: int = 240, trailer_ms: int = 20, timeout_s: int = 120, conreq_repeats: int = 5,
                  autobreak: bool = True, fast_start: bool = True, listen: bool = True, fm600: bool = False,
                  drive: float = 1.0, seed: int | None = None,
-                 on_event: Callable[[str], None] | None = None) -> None:
+                 on_event: Callable[[str], None] | None = None,
+                 on_data: Callable[[str, bytes], None] | None = None) -> None:
         self.mycall, self.grid, self.bandwidth = mycall.upper(), grid, bandwidth
         self.fs = fs
         self.phy = Phy(fs)
@@ -87,6 +89,7 @@ class ArqStation:
         self.autobreak, self.fast_start, self.listen, self.fm600 = autobreak, fast_start, listen, fm600
         self.rng = random.Random(seed)
         self.on_event = on_event
+        self.on_data = on_data                           # (tag, bytes): "ARQ" data in sequence, "IDF" ID frames
         self.events: list[str] = []
         self.trace: list[tuple] = []                     # (ms, frame, ok, session, accepted) for every frame heard
         self.received = bytearray()
@@ -129,8 +132,13 @@ class ArqStation:
     def disconnect(self) -> None:
         if self.state in ("IDLE", "IRS", "ISS", "IRStoISS"):
             self.disc_request = True
+            self._disc_requested_at = self.now
             if self.state in ("ISS", "IDLE") and self._tx is None and not self._txq:
                 self._check_disconnect()
+
+    def purge(self) -> None:
+        self._clear_outq()
+        self._event("BUFFER 0")
 
     def abort(self) -> None:
         self.rpt = self.disc_repeating = False
@@ -254,6 +262,8 @@ class ArqStation:
         self.session_bw = 0
         self.connected = self.pending = False
         self.rpt = self.disc_repeating = self.disc_request = self.break_cmd = False
+        self._disc_requested_at = 0.0
+        self._last_heard = self.now
         self.repeat_count, self.repeat_interval, self.next_play = 0, 2000, 0.0
         self.rmt_leader = 0
         self.received_leader = 0
@@ -280,6 +290,11 @@ class ArqStation:
                 self._txq.append(self._last)
             else:
                 self.rpt = False
+        # An IRS only sends DISC in reply to IDLE or data (as ardopcf); if the ISS has gone quiet, do not wait for
+        # the session timeout.
+        if self.disc_request and not self.keyed and not self.phy.busy() \
+                and self.now - max(self._disc_requested_at, self._last_heard) > DISC_FALLBACK_MS:
+            self._check_disconnect()
         if self.state in ("ISS", "IDLE", "IRS", "IRStoISS") and not self.timeout_triggered \
                 and self.now - self._timeout_trip > self.timeout_ms:
             self.rpt = False
@@ -451,9 +466,16 @@ class ArqStation:
         self.trace.append((round(self.now), d.name, ok, d.session, accept, self.state, self.sub))
         if not accept:
             return
+        self._last_heard = self.now
+        if self.disc_repeating and ok and t == codec.END and self.state != "DISC":
+            self._end_session(False, True, f"STATUS ARQ CONNECTION ENDED WITH {self.remote}")
+            return
         if t == codec.IDFRAME:
             if ok:
+                text = f"ID:{d.extra.get('caller')} [{d.extra.get('grid', '')}]"
                 self._event(f"STATUS IDFRAME {d.extra.get('caller')} {d.extra.get('grid', '')}".rstrip())
+                if self.on_data:
+                    self.on_data("IDF", text.encode())
             return
         # SoundInput.c shortcuts
         if self.state == "IRStoISS":
@@ -588,11 +610,21 @@ class ArqStation:
                         self._timeout_trip = self.now
                         self._ack(100)
                     return
+                if is_data(t) and self.disc_request:
+                    if ok and t != self.last_to_host:            # deliver it, then DISC instead of the ACK
+                        self.received += data or b""
+                        if self.on_data and data:
+                            self.on_data("ARQ", bytes(data))
+                        self.last_to_host = t
+                    self._check_disconnect()
+                    return
                 if ok and is_data(t):
                     if not self.rmt_leader:
                         self.rmt_leader = d.extra.get("leader_ms", 0) + 200
                     if t != self.last_to_host:
                         self.received += data or b""
+                        if self.on_data and data:
+                            self.on_data("ARQ", bytes(data))
                         self.last_to_host = t
                         self._timeout_trip = self.now
                     if self.sub == "IRSfromISS":

@@ -65,6 +65,24 @@ class SessionTest(unittest.TestCase):
         self.assertIn("DISCONNECTED", b.events)
         self.assertGreater(a.stats["shift_up"], 0)
 
+    def test_irs_disconnect_while_receiving_data(self):
+        a, b = pair()
+        a.send(bytes(range(256)) * 6)
+        a.connect("K1ABC")
+        self.assertTrue(run(a, b, 60, until=lambda: len(b.received) > 0))
+        b.disconnect()                                       # IRS: DISC goes out in place of the next ACK
+        self.assertTrue(run(a, b, 30, until=lambda: a.state == b.state == "DISC" and not b.keyed))
+        self.assertIn("DISCONNECTED", a.events)
+
+    def test_irs_disconnect_after_the_iss_went_silent(self):
+        a, b = pair()
+        a.send(b"x" * 100)
+        a.connect("K1ABC")
+        self.assertTrue(run(a, b, 60, until=lambda: len(b.received) == 100))
+        a.abort()                                            # ISS vanishes without a word
+        b.disconnect()
+        self.assertTrue(run(a, b, 30, until=lambda: b.state == "DISC"))
+
     def test_lost_transmissions_are_repeated_without_duplicates(self):
         a, b = pair()
         data = bytes(np.random.default_rng(3).integers(0, 256, 900, dtype=np.uint8))

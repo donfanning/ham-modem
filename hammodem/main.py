@@ -2,6 +2,7 @@
 
     ham-modem --kiss-pty ~/.ham-modem0 --kiss-tcp 8001 --sip-dial 7300@pbx.example:5060 -m
     ham-modem --kiss-pty ~/.ham-modem0 --udp-audio 7401:127.0.0.1:7300       # tools/audio_hub.py test channel
+    ham-modem --modem ardop --mycall K1ABC --ardop-host 8515 --sip-dial 7300@pbx.example   # ARDOP for Winlink
 
 The audio clock is the outgoing block tick (20 ms): every tick the TNC produces one block (burst or silence).
 """
@@ -119,7 +120,8 @@ class Runtime:
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="ham-modem", description="AX.25 packet TNC over VoIP audio")
-    ap.add_argument("--modem", choices=MODEMS, default="afsk1200")
+    ap.add_argument("--modem", choices=(*MODEMS, "ardop"), default="afsk1200",
+                    help="'ardop': an ARDOP (Winlink) TNC with an ardopcf-compatible host interface instead of AX.25")
     ap.add_argument("--rate", type=int, help="audio sample rate (default: 8000 for AFSK, 16000 for g3ruh9600, "
                                              "48000 for g3ruh19200/38400)")
     ap.add_argument("--kiss-pty", action="append", default=[], metavar="PATH",
@@ -142,6 +144,7 @@ def main(argv: list[str] | None = None) -> None:
     leg.add_argument("--iax-dial", metavar="EXT@HOST[:PORT]",
                      help="IAX2: call EXT through the PBX and keep the call up (G.711 mu-law; AFSK modes)")
     leg.add_argument("--iax-listen", metavar="HOST[:PORT]", help="IAX2: register with the PBX and answer calls")
+    ap.add_argument("--udp-bind", default="0.0.0.0", metavar="ADDR", help="local address for --udp-audio")
     ap.add_argument("--iax-user", default="station", help="IAX2 user (secret from HAM_MODEM_IAX_SECRET)")
     ap.add_argument("--sip-port", type=int, default=0, help="local SIP UDP port (default: any; 5060 for --sip-listen)")
     ap.add_argument("--media-port", type=int, default=0, help="local RTP port (default: any)")
@@ -168,6 +171,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--audio-tap", metavar="HOST:PORT",
                     help="copy received audio as raw s16le UDP (e.g. to Direwolf: ADEVICE udp:PORT)")
     ap.add_argument("--sim-loss", type=float, default=0.0, help=argparse.SUPPRESS)   # lab: drop received RTP
+    ap.add_argument("--ardop-host", metavar="[HOST:]PORT", default="127.0.0.1:8515",
+                    help="ARDOP: host interface command port (data on PORT+1), as ardopcf (default 8515)")
+    ap.add_argument("--arqbw", default="500MAX", help="ARDOP: ARQ bandwidth (e.g. 500MAX, 2000MAX, 200FORCED)")
+    ap.add_argument("--drive", type=int, default=100, help="ARDOP: transmit level in percent (DRIVELEVEL)")
     ap.add_argument("-m", "--monitor", action="store_true", help="print frames heard and sent")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
@@ -178,13 +185,17 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
 
-    try:
-        tnc = Tnc(args.modem, args.rate, txdelay=args.txdelay / 1000, persist=args.persist,
-                  slottime=args.slottime / 1000, txtail=args.txtail / 1000, collision_detect=args.collision_detect, fx25=args.fx25, repeat=args.repeat,
-                  il2p={"off": None, "on": False, "max": True}[args.il2p])
-    except ValueError as exc:
-        ap.error(str(exc))
-    if args.monitor:
+    if args.modem == "ardop":
+        tnc = None
+    else:
+        try:
+            tnc = Tnc(args.modem, args.rate, txdelay=args.txdelay / 1000, persist=args.persist,
+                      slottime=args.slottime / 1000, txtail=args.txtail / 1000,
+                      collision_detect=args.collision_detect, fx25=args.fx25, repeat=args.repeat,
+                      il2p={"off": None, "on": False, "max": True}[args.il2p])
+        except ValueError as exc:
+            ap.error(str(exc))
+    if args.monitor and tnc is not None:
         tnc.monitor = lambda d, text: print(f"{time.strftime('%H:%M:%S')} {d} {text}", flush=True)
 
     if args.iax_dial or args.iax_listen:
@@ -196,7 +207,7 @@ def main(argv: list[str] | None = None) -> None:
                        os.environ.get("HAM_MODEM_IAX_SECRET", ""), dial=ext or None, listen=bool(args.iax_listen))
     elif args.udp_audio:
         lport, _, peer = args.udp_audio.partition(":")
-        audio = UdpAudio(("0.0.0.0", int(lport)), _hostport(peer) if peer else None, args.rate)
+        audio = UdpAudio((args.udp_bind, int(lport)), _hostport(peer) if peer else None, args.rate)
     else:
         codecs = [CODECS[c] for c in args.codec]
         if any(c.rate != args.rate for c in codecs):
@@ -205,6 +216,12 @@ def main(argv: list[str] | None = None) -> None:
                        sip_port=args.sip_port or (5060 if args.sip_listen else 0), media_port=args.media_port,
                        user=args.sip_user, password=os.environ.get("HAM_MODEM_SIP_PASSWORD"),
                        sim_loss=args.sim_loss)
+    if args.modem == "ardop":
+        from .ardop.arq import ArqStation  # noqa: PLC0415
+        from .ardop.tnc import run as run_ardop  # noqa: PLC0415
+        station = ArqStation(args.mycall, fs=args.rate, bandwidth=args.arqbw.upper(), drive=args.drive / 100)
+        run_ardop(station, audio, *_hostport(args.ardop_host))
+        return
     serials = [_pty(p) for p in args.kiss_pty]
     for spec in args.serial:
         dev, _, baud = spec.partition(":")

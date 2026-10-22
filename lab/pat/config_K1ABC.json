@@ -1,0 +1,31 @@
+{
+  "mycall": "K1ABC",
+  "secure_login_password": "",
+  "auxiliary_addresses": [],
+  "locator": "FN31",
+  "auto_download_size_limit": -1,
+  "service_codes": [
+    "PUBLIC"
+  ],
+  "http_addr": "0.0.0.0:8080",
+  "motd": [
+    "ham-modem ARDOP lab"
+  ],
+  "connect_aliases": {},
+  "listen": [],
+  "hamlib_rigs": {},
+  "ardop": {
+    "addr": "172.31.73.1:8515",
+    "arq_bandwidth": {
+      "Forced": false,
+      "Max": 500
+    },
+    "connect_requests": 5,
+    "rig": "",
+    "ptt_ctrl": false,
+    "beacon_interval": 0,
+    "cwid_enabled": false
+  },
+  "schedule": {},
+  "version_reporting_disabled": true
+}
