@@ -23,7 +23,7 @@ import numpy as np
 from .agw import AgwServer
 from .kiss_tcp import KissTcpServer
 from .modems import MODEMS, default_rate
-from .serial import DeviceSerial, PtySerial
+from .serial import DeviceSerial, PtySerial, TcpSerial
 from .tnc import Tnc
 from .audio.rtp import CODECS, ConcealedPcm
 from .audio.sip import SipLeg
@@ -120,7 +120,7 @@ class Runtime:
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="ham-modem", description="AX.25 packet TNC over VoIP audio")
-    ap.add_argument("--modem", choices=(*MODEMS, "ardop"), default="afsk1200",
+    ap.add_argument("--modem", choices=(*MODEMS, "ardop", "amtor"), default="afsk1200",
                     help="'ardop': an ARDOP (Winlink) TNC with an ardopcf-compatible host interface instead of AX.25")
     ap.add_argument("--rate", type=int, help="audio sample rate (default: 8000 for AFSK, 16000 for g3ruh9600, "
                                              "48000 for g3ruh19200/38400)")
@@ -171,6 +171,12 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--audio-tap", metavar="HOST:PORT",
                     help="copy received audio as raw s16le UDP (e.g. to Direwolf: ADEVICE udp:PORT)")
     ap.add_argument("--sim-loss", type=float, default=0.0, help=argparse.SUPPRESS)   # lab: drop received RTP
+    ap.add_argument("--text-pty", action="append", default=[], metavar="PATH",
+                    help="AMTOR: text terminal on a pty symlinked at PATH (type, read; /help for commands)")
+    ap.add_argument("--text-tcp", metavar="[HOST:]PORT", help="AMTOR: the same text terminal over TCP (telnet/nc)")
+    ap.add_argument("--amtor-reply", type=int, default=50, metavar="MS",
+                    help="AMTOR ARQ: slave reply delay after a received burst (the audio round trip must fit "
+                         "in 240 ms minus this minus 70 ms)")
     ap.add_argument("--ardop-host", metavar="[HOST:]PORT", default="127.0.0.1:8515",
                     help="ARDOP: host interface command port (data on PORT+1), as ardopcf (default 8515)")
     ap.add_argument("--arqbw", default="500MAX", help="ARDOP: ARQ bandwidth (e.g. 500MAX, 2000MAX, 200FORCED)")
@@ -185,7 +191,7 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
 
-    if args.modem == "ardop":
+    if args.modem in ("ardop", "amtor"):
         tnc = None
     else:
         try:
@@ -221,6 +227,17 @@ def main(argv: list[str] | None = None) -> None:
         from .ardop.tnc import run as run_ardop  # noqa: PLC0415
         station = ArqStation(args.mycall, fs=args.rate, bandwidth=args.arqbw.upper(), drive=args.drive / 100)
         run_ardop(station, audio, *_hostport(args.ardop_host))
+        return
+    if args.modem == "amtor":
+        from .amtor.tnc import AmtorTnc, run as run_amtor  # noqa: PLC0415
+        ports = [_pty(p) for p in args.text_pty]
+        if args.text_tcp:
+            ports.append(TcpSerial(*_hostport(args.text_tcp)))
+        if not ports:
+            ap.error("--modem amtor needs --text-pty or --text-tcp")
+        log.info("AMTOR %s (selcal %s) at %d Hz; audio %s; text on %s", args.mycall, "", args.rate, audio.name,
+                 ", ".join(p.name for p in ports))
+        run_amtor(AmtorTnc(args.mycall, args.rate, reply_ms=args.amtor_reply), audio, ports)
         return
     serials = [_pty(p) for p in args.kiss_pty]
     for spec in args.serial:
