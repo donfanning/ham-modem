@@ -65,10 +65,12 @@ def _poly_eval(p: list[int], x: int) -> int:
 
 
 class ReedSolomon:
-    FCR = 1
+    """RS over GF(2^8)/0x11d, primitive element 1. ``fcr``: first consecutive root (FX.25 uses 1, IL2P 0).
+    Shortened codewords are handled as implicitly zero-*prefixed* (the textbook way); FX.25's Direwolf-style
+    trailing-zero shortening is done by the caller."""
 
-    def __init__(self, nroots: int) -> None:
-        self.nroots = nroots
+    def __init__(self, nroots: int, fcr: int = 1) -> None:
+        self.nroots, self.FCR = nroots, fcr
         g = [1]
         for i in range(nroots):
             root = _EXP[self.FCR + i]

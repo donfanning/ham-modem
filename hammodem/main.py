@@ -152,6 +152,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--fx25", type=int, choices=(0, 16, 32, 64), default=0,
                     help="send frames FX.25-wrapped with this many Reed-Solomon check bytes (receive always "
                          "accepts FX.25; plain AX.25 stations still decode FX.25 frames)")
+    ap.add_argument("--il2p", choices=("off", "on", "max"), default="off",
+                    help="transmit IL2P (Direwolf 1.7 / NinoTNC) instead of AX.25; 'max' = maximum FEC. "
+                         "Receive always accepts IL2P on AFSK and G3RUH. Plain AX.25 stations cannot decode it")
     ap.add_argument("--repeat", type=int, default=1, metavar="N",
                     help="send every frame N times, spaced so one lost packet cannot hit all copies "
                          "(for the fast modes; receivers drop duplicates)")
@@ -173,7 +176,8 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         tnc = Tnc(args.modem, args.rate, txdelay=args.txdelay / 1000, persist=args.persist,
-                  slottime=args.slottime / 1000, txtail=args.txtail / 1000, collision_detect=args.collision_detect, fx25=args.fx25, repeat=args.repeat)
+                  slottime=args.slottime / 1000, txtail=args.txtail / 1000, collision_detect=args.collision_detect, fx25=args.fx25, repeat=args.repeat,
+                  il2p={"off": None, "on": False, "max": True}[args.il2p])
     except ValueError as exc:
         ap.error(str(exc))
     if args.monitor:

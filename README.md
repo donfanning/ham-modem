@@ -23,6 +23,7 @@ Design, research notes and phases: [docs/PLAN.md](docs/PLAN.md).
 | PAM-4 57.6 kbit/s VoIP-native mode (`--modem pam57600`, 48 kHz legs; `pam19200` on 16 kHz) | done; live 48/48 in room 7348, 96.7% at 3% RTP loss vs 58% for AFSK 1200 ([lab note](lab/PAM4_57600_2026_10_21.md)) |
 | FX.25 FEC (`--fx25 16/32/64`; receive always on), Direwolf-compatible | done; interop both ways under damage; 1200 bd at 3% loss: 50% -> 96.7% ([lab note](lab/FX25_2026_10_21.md)) |
 | Loss resilience: erasure-aware FX.25 decoding (RTP concealment -> RS erasures) and `--repeat N` time diversity | done; 9600 FX.25/32 at 3% loss 55 -> 59/60, 57.6k at 5% loss 85% -> 100% ([lab note](lab/LOSS_RESILIENCE_2026_10_21.md)) |
+| IL2P (`--il2p on|max`; receive always on for AFSK/G3RUH) | done; interoperates with Direwolf 1.7 both ways incl. RS repair; for loss, prefer FX.25 ([lab note](lab/IL2P_2026_10_21.md)) |
 | CSMA/CD for rooms (`--collision-detect`) | done, opt-in |
 
 ## Try it

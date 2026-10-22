@@ -22,6 +22,8 @@ import numpy as np
 from .afsk import _Fir, lowpass_taps
 from ..fx25 import Fx25Receiver
 from ..fx25 import burst_bits as fx25_burst_bits
+from ..il2p import Il2pReceiver
+from ..il2p import burst_levels as il2p_burst_levels
 from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, extend_bits, span_mask
 
 ERASE_TAIL = 18                         # NRZI (1) + descrambler taps (17): how far one bad line bit reaches
@@ -90,6 +92,7 @@ class G3ruhModulator:
         _, self.decim, beta = plan(baud, fs)
         self.nrzi, self.scr = NrziEncoder(), Scrambler()
         self.fx25 = 0                      # FX.25 check bytes per frame (16/32/64), 0 = plain AX.25
+        self.il2p: bool | None = None      # send IL2P instead (True: max FEC, False: normal FEC)
         self._shape = _Fir(raised_cosine(beta, 8, SPS))
         self._phase = 0                    # decimation phase carried across bursts
 
@@ -97,7 +100,11 @@ class G3ruhModulator:
         return max(1, math.ceil(seconds * self.baud / 8))
 
     def modulate_bits(self, bits: list[int]) -> np.ndarray:
-        levels = np.array(self.scr.scramble(self.nrzi.encode(bits)), dtype=np.float64) * 2 - 1
+        return self.modulate_levels(self.scr.scramble(self.nrzi.encode(bits)))
+
+    def modulate_levels(self, line: list[int]) -> np.ndarray:
+        """Shape line levels directly -- IL2P bypasses NRZI and the G3RUH scrambler."""
+        levels = np.array(line, dtype=np.float64) * 2 - 1
         x = np.zeros(len(levels) * SPS)
         x[::SPS] = levels
         y = self._shape(x)
@@ -107,6 +114,9 @@ class G3ruhModulator:
         return np.round(np.clip(out * self.amplitude, -1, 1) * 32767).astype(np.int16)
 
     def modulate(self, frames: list[bytes], txdelay: float = 0.1, txtail: float = 0.01) -> np.ndarray:
+        if self.il2p is not None:
+            return self.modulate_levels(il2p_burst_levels(frames, self.flags_for(txdelay),
+                                                          max(3, self.flags_for(txtail)), self.il2p))
         # A few trailing flags flush the shaping filter and let the far scrambler/PLL finish the last frame.
         return self.modulate_bits(fx25_burst_bits(frames, self.flags_for(txdelay), max(3, self.flags_for(txtail)),
                                                   self.fx25))
@@ -140,6 +150,7 @@ class G3ruhDemodulator:
         self.nrzi = NrziDecoder()
         self.hdlc = HdlcDecoder()
         self.fx25 = Fx25Receiver()
+        self.il2p = Il2pReceiver()
         self._recent: dict[bytes, int] = {}
         self._bits_seen = 0
         self._abs = 0                       # internal samples processed
@@ -189,6 +200,7 @@ class G3ruhDemodulator:
         bits: list[int] = []
         mask = self._mask
         flags: list[bool] = []
+        raw: list[int] = []
         step, prev, phase, quality, run, ds = self.step, self.prev, self.phase, self.quality, self.run, self.desc_state
         nrzi, hdlc = self.nrzi, self.hdlc
         for i, level in enumerate(levels):
@@ -204,6 +216,7 @@ class G3ruhDemodulator:
                 run += 1
                 if run > 24:                   # scrambled data never holds a level this long
                     quality = max(-1.0, quality - 0.1)
+                raw.append(level)
                 bit = (level ^ (ds >> 16) ^ (ds >> 11)) & 1
                 ds = ((ds << 1) | level) & 0x1FFFF
                 d = nrzi.decode(bit)
@@ -220,4 +233,5 @@ class G3ruhDemodulator:
         else:
             ext, self._since = None, self._since + len(bits)
         out += self.fx25.feed_bits(bits, ext)
+        out += self.il2p.feed_bits(raw)
         return _dedupe(self, out, len(bits))

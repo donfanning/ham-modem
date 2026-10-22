@@ -23,6 +23,8 @@ import numpy as np
 
 from ..fx25 import Fx25Receiver
 from ..fx25 import burst_bits as fx25_burst_bits
+from ..il2p import Il2pReceiver
+from ..il2p import burst_levels as il2p_burst_levels
 from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, extend_bits, span_mask
 
 
@@ -81,6 +83,7 @@ class AfskModulator:
         self.p, self.fs, self.amplitude = profile, fs, amplitude
         self.nrzi = NrziEncoder()
         self.fx25 = 0                     # FX.25 check bytes per frame (16/32/64), 0 = plain AX.25
+        self.il2p: bool | None = None     # send IL2P instead (True: max FEC, False: normal FEC)
         self.phase = 0.0
         self.bits_sent = 0                # bit k starts at sample k * fs / baud, kept exact in integers
         self.samples_sent = 0
@@ -90,7 +93,11 @@ class AfskModulator:
 
     def modulate_bits(self, bits: list[int]) -> np.ndarray:
         """NRZI-encode raw line bits and render them, keeping phase and bit timing across calls."""
-        levels = np.array(self.nrzi.encode(bits), dtype=np.int8)
+        return self.modulate_levels(self.nrzi.encode(bits))
+
+    def modulate_levels(self, line: list[int]) -> np.ndarray:
+        """Render line levels directly (1 = mark), e.g. IL2P, which uses no NRZI."""
+        levels = np.array(line, dtype=np.int8)
         baud, fs = self.p.baud, self.fs
         end_bits = self.bits_sent + len(levels)
         n = -(-end_bits * fs // baud) - self.samples_sent
@@ -105,6 +112,9 @@ class AfskModulator:
         return np.round(np.sin(phase) * self.amplitude * 32767).astype(np.int16)
 
     def modulate(self, frames: list[bytes], txdelay: float = 0.3, txtail: float = 0.03) -> np.ndarray:
+        if self.il2p is not None:
+            return self.modulate_levels(il2p_burst_levels(frames, self.flags_for(txdelay), self.flags_for(txtail),
+                                                          self.il2p))
         bits = fx25_burst_bits(frames, self.flags_for(txdelay), self.flags_for(txtail), self.fx25)
         return self.modulate_bits(bits)
 
@@ -112,7 +122,7 @@ class AfskModulator:
 class _Slicer:
     """One decision threshold: PLL bit clock, NRZI decoder, HDLC receiver and a carrier-quality score."""
 
-    __slots__ = ("gain", "phase", "prev", "nrzi", "hdlc", "fx25", "quality", "run", "since")
+    __slots__ = ("gain", "phase", "prev", "nrzi", "hdlc", "fx25", "il2p", "quality", "run", "since")
 
     def __init__(self, gain: float) -> None:
         self.gain = gain
@@ -121,6 +131,7 @@ class _Slicer:
         self.nrzi = NrziDecoder()
         self.hdlc = HdlcDecoder()
         self.fx25 = Fx25Receiver()
+        self.il2p = Il2pReceiver()
         self.quality = 0.0
         self.run = 0                      # bits since the last transition
         self.since = 1 << 30              # bits since the last erased bit
@@ -216,6 +227,7 @@ class AfskDemodulator:
         bits: list[int] = []
         mask = self._mask
         flags: list[bool] = []
+        raw: list[int] = []
         for i, level in enumerate(levels):
             level = 1 if level else 0
             if level != prev:
@@ -230,6 +242,7 @@ class AfskDemodulator:
                 run += 1
                 if run > 7:                   # bit stuffing caps NRZI runs at 7 bits: no packet signal here
                     quality = max(-1.0, quality - 0.1)
+                raw.append(level)
                 bit = nrzi.decode(level)
                 bits.append(bit)
                 if mask is not None:
@@ -243,4 +256,6 @@ class AfskDemodulator:
         else:
             ext, s.since = None, s.since + len(bits)
         for frame in s.fx25.feed_bits(bits, ext):
+            self._emit(frame, base + len(levels), out)
+        for frame in s.il2p.feed_bits(raw):
             self._emit(frame, base + len(levels), out)

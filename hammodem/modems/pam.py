@@ -52,6 +52,7 @@ class PamModulator:
         self.decim = _plan(baud, fs)
         self.nrzi, self.scr = NrziEncoder(), Scrambler()
         self.fx25 = 0                       # FX.25 check bytes per frame (16/32/64), 0 = plain AX.25
+        self.il2p = None                    # IL2P is not defined for PAM; kept for a uniform interface
         self._shape = _Fir(raised_cosine(BETA, 10, SPS))
         self._phase = 0
         self._odd: int | None = None        # a bit left over from the previous call (bursts are bit-, not pair-aligned)
