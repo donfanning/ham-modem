@@ -120,7 +120,7 @@ class Runtime:
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="ham-modem", description="AX.25 packet TNC over VoIP audio")
-    ap.add_argument("--modem", choices=(*MODEMS, "ardop", "amtor"), default="afsk1200",
+    ap.add_argument("--modem", choices=(*MODEMS, "ardop", "amtor", "pactor", "rtty"), default="afsk1200",
                     help="'ardop': an ARDOP (Winlink) TNC with an ardopcf-compatible host interface instead of AX.25")
     ap.add_argument("--rate", type=int, help="audio sample rate (default: 8000 for AFSK, 16000 for g3ruh9600, "
                                              "48000 for g3ruh19200/38400)")
@@ -174,6 +174,10 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--text-pty", action="append", default=[], metavar="PATH",
                     help="AMTOR: text terminal on a pty symlinked at PATH (type, read; /help for commands)")
     ap.add_argument("--text-tcp", metavar="[HOST:]PORT", help="AMTOR: the same text terminal over TCP (telnet/nc)")
+    ap.add_argument("--rtty-baud", type=float, default=45.45, help="RTTY: baud rate (45.45, 50, 75, 100)")
+    ap.add_argument("--rtty-shift", type=float, default=170.0, help="RTTY: shift in Hz (170, 425, 850)")
+    ap.add_argument("--kb-center", type=float, default=1700.0, help="keyboard modes: audio centre frequency")
+    ap.add_argument("--rtty-reverse", action="store_true", help="RTTY: mark is the lower tone")
     ap.add_argument("--amtor-reply", type=int, default=50, metavar="MS",
                     help="AMTOR ARQ: slave reply delay after a received burst (the audio round trip must fit "
                          "in 240 ms minus this minus 70 ms)")
@@ -191,7 +195,7 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
 
-    if args.modem in ("ardop", "amtor"):
+    if args.modem in ("ardop", "amtor", "pactor", "rtty"):
         tnc = None
     else:
         try:
@@ -228,16 +232,32 @@ def main(argv: list[str] | None = None) -> None:
         station = ArqStation(args.mycall, fs=args.rate, bandwidth=args.arqbw.upper(), drive=args.drive / 100)
         run_ardop(station, audio, *_hostport(args.ardop_host))
         return
-    if args.modem == "amtor":
-        from .amtor.tnc import AmtorTnc, run as run_amtor  # noqa: PLC0415
+    if args.modem in ("amtor", "pactor", "rtty"):
         ports = [_pty(p) for p in args.text_pty]
         if args.text_tcp:
             ports.append(TcpSerial(*_hostport(args.text_tcp)))
         if not ports:
-            ap.error("--modem amtor needs --text-pty or --text-tcp")
+            ap.error(f"--modem {args.modem} needs --text-pty or --text-tcp")
+    if args.modem == "rtty":
+        from .keyboard.rtty import RttyDemodulator, RttyModulator  # noqa: PLC0415
+        from .keyboard.tnc import KeyboardTnc, run as run_kb  # noqa: PLC0415
+        kw = dict(fs=args.rate, baud=args.rtty_baud, shift=args.rtty_shift, center=args.kb_center,
+                  reverse=args.rtty_reverse)
+        log.info("RTTY %.2f baud, %g Hz shift at %d Hz; audio %s; text on %s", args.rtty_baud, args.rtty_shift,
+                 args.rate, audio.name, ", ".join(p.name for p in ports))
+        run_kb(KeyboardTnc("rtty", RttyModulator(**kw), RttyDemodulator(**kw), args.rate), audio, ports)
+        return
+    if args.modem == "pactor":
+        from .pactor.tnc import PactorTnc, run as run_pactor  # noqa: PLC0415
+        log.info("PACTOR-I %s at %d Hz; audio %s; text on %s", args.mycall, args.rate, audio.name,
+                 ", ".join(p.name for p in ports))
+        run_pactor(PactorTnc(args.mycall, args.rate, center=args.kb_center), audio, ports)
+        return
+    if args.modem == "amtor":
+        from .amtor.tnc import AmtorTnc, run as run_amtor  # noqa: PLC0415
         log.info("AMTOR %s (selcal %s) at %d Hz; audio %s; text on %s", args.mycall, "", args.rate, audio.name,
                  ", ".join(p.name for p in ports))
-        run_amtor(AmtorTnc(args.mycall, args.rate, reply_ms=args.amtor_reply), audio, ports)
+        run_amtor(AmtorTnc(args.mycall, args.rate, center=args.kb_center, reply_ms=args.amtor_reply), audio, ports)
         return
     serials = [_pty(p) for p in args.kiss_pty]
     for spec in args.serial:
