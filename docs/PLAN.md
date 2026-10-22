@@ -152,9 +152,12 @@ Phases are ordered by value. The first is a prerequisite for every HF protocol a
     - 10.0 **Reference peer**: ardopcf in a lab-network container, audio through ALSA FIFOs to the hub/ConfBridge
       (as with Direwolf): working ARDOP over VoIP immediately, and the live interop partner. Offline interop via
       its `--decodewav` / `--writetxwav`.
-    - 10.1 **Native physical layer**: leader (50 bd two-tone), sync, frame-type 4FSK (10 symbols + parity),
-      4FSK data frames, RS FEC, CRC16, Packed6 call signs, session ID; verified both ways against ardopcf WAVs.
-    - 10.2 Multi-carrier 4PSK / 8PSK / 16QAM data frames (100 bd, 1-8 carriers).
+    - 10.1 **Native physical layer** *(done 2026-10-22, [lab note](../lab/ARDOP_PHY_2026_10_22.md))*: leader (50 bd
+      two-tone), sync, frame-type 4FSK (10 symbols + parity), 4FSK data frames, RS FEC, CRC16, Packed6 call signs,
+      session ID; verified both ways against ardopcf WAVs (our TX is sample-exact with ardopcf's).
+    - 10.2 Multi-carrier 4PSK / 8PSK / 16QAM data frames (100 bd, 1-8 carriers) *(done 2026-10-22, same note;
+      still open: 600 bd FM 4FSK frames, 12 kHz <-> 8/16 kHz resampling, streaming receiver, better 16QAM.2000
+      noise margin)*.
     - 10.3 ARQ session layer (ConReq/ConAck timing, even/odd data, ACK/NAK quality, BREAK/IDLE/DISC/END, gear
       shifting) and FEC mode.
     - 10.4 Winlink host interface (TCP 8515 commands / 8516 data) on our audio legs; test with Pat.

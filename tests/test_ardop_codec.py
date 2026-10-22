@@ -61,8 +61,9 @@ class ArdopModulateTest(unittest.TestCase):
         enc = m.encode_fsk_data(e, b"x" * 10, 0xFF)
         self.assertEqual(len(enc), 2 + 1 + 16 + 2 + 4)            # type x2, count, 16 data, CRC, 4 RS
         x = m.modulate_4fsk(enc, leader_ms=240, trailer_ms=20)
-        # leader 12 symbols + 10 type symbols + 23 bytes * 4 symbols, all 240 samples, + 20 ms trailer
-        self.assertEqual(len(x), (12 + 10 + 23 * 4) * 240 + 240)
+        # leader 12 symbols + 10 type symbols + 23 bytes * 4 symbols, all 240 samples, + trailer (3 x 120 samples for
+        # 20 ms) - the 60 samples of filter alignment ardopcf drops
+        self.assertEqual(len(x), (12 + 10 + 23 * 4) * 240 + 3 * 120 - 60)
         self.assertEqual(len(m.encode_conreq("N0CALL", "K1ABC", "500M")), 18)
 
     def test_data_block_crc_and_rs(self):

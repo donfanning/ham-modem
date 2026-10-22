@@ -1,4 +1,4 @@
-"""ARDOP receive side (4FSK frames): leader detection, symbol timing, sync, frame type, 4FSK data, RS + CRC.
+"""ARDOP receive side: leader detection, symbol timing, sync, frame type, 4FSK and PSK/QAM data, RS + CRC.
 
 An independent receiver design (not a port of ardopcf's SoundInput.c), checked against ardopcf recordings:
 
@@ -8,7 +8,10 @@ An independent receiver design (not a port of ardopcf's SoundInput.c), checked a
 * Sync: the first symbol whose sign does not alternate.
 * Frame type: ten 50-baud 4FSK symbols; decoded by minimum distance over every known frame type (soft tone
   energies), for session 0xFF and any expected session IDs -- as ardopcf does.
-* Data: per symbol, the four tone energies (50 or 100 baud); hard decision -> bytes -> Reed-Solomon -> CRC.
+* 4FSK data: per symbol, the four tone energies (50 or 100 baud); hard decision -> bytes -> Reed-Solomon -> CRC.
+* PSK/QAM data (100 baud, 1-8 carriers): per carrier, each 120-sample symbol correlated with the half-sine-windowed
+  carrier; the phase change from the previous symbol (starting from the reference symbol) gives the symbol, and for
+  16QAM the magnitude relative to the reference symbol gives bit 3. 600 baud FM frames are identified but skipped.
 """
 
 from __future__ import annotations
@@ -51,7 +54,7 @@ def _tone_energies(x: np.ndarray, pos: int, n: int, freqs) -> np.ndarray:
     return np.array([abs(np.dot(seg, np.exp(-2j * np.pi * f / FS * t))) ** 2 for f in freqs])
 
 
-class FskReceiver:
+class Receiver:
     LEADER_THRESHOLD = 0.6        # normalised correlation with the leader template
     MIN_LEADER_SYMBOLS = 4
     MIN_TYPE_SCORE = 0.7          # real frames score ~1.0; false leaders inside PSK data score ~0.4
@@ -134,7 +137,7 @@ class FskReceiver:
         return bytes(out), p
 
     def decode(self, x: np.ndarray, start: int = 0) -> Decoded | None:
-        """Decode the next 4FSK frame at or after ``start`` (None if no frame / not 4FSK)."""
+        """Decode the next frame at or after ``start`` (None if there is none)."""
         pos = self.find_frame(x, start)
         if pos is None:
             return None
@@ -144,6 +147,8 @@ class FskReceiver:
         info = codec.FRAMES[t]
         p = pos + 10 * LEADER_SYM
         extra = {"type_score": round(score, 3)}
+        if info.mod in modulate.BITS:
+            return self._decode_psk(x, t, info, sess, pos, p, extra)
         if info.mod != "4FSK" or info.baud == 600:
             return Decoded(t, info.name, sess, None, False, 0, pos, p + frame_samples(info),
                            dict(extra, unsupported=info.mod))
@@ -178,6 +183,47 @@ class FskReceiver:
             fixed_total += fixed
             payload += block[1:1 + block[0]]
         return Decoded(t, info.name, sess, payload, ok, fixed_total, pos, p, extra)
+
+    def _decode_psk(self, x, t, info, sess, pos, p, extra) -> Decoded:
+        """Differential PSK/QAM: per carrier and symbol, correlate the half-sine-windowed carrier; the phase change
+        from the previous symbol gives the low 3 bits; for 16QAM the magnitude (vs. the reference symbol's) the 4th."""
+        blen = info.data_len + 3 + info.rs_len
+        bits_per = modulate.BITS[info.mod]
+        nsym = -(-blen * 8 // bits_per)
+        k = np.arange(120)
+        env = modulate._PSK_ENV
+        end = p + (nsym + 1) * 120
+        if end > len(x):
+            return Decoded(t, info.name, sess, None, False, 0, pos, len(x), dict(extra, truncated=True))
+        seg = x[p:end].reshape(nsym + 1, 120)
+        payload, ok, fixed_total, qual = b"", True, 0, []
+        for f in modulate.CARRIERS[info.carriers]:
+            z = (seg * env) @ np.exp(-2j * np.pi * f * k / FS)
+            d = z[1:] * np.conj(z[:-1])
+            idx = np.round(np.angle(d) / (np.pi / 4)).astype(np.int64) % 8
+            resid = np.angle(d * np.exp(-1j * idx * np.pi / 4))
+            qual.append(float(np.mean(np.abs(resid))))
+            if info.mod == "4PSK":
+                syms = (idx // 2) & 3
+            else:
+                syms = idx & 7
+            if info.mod == "16QAM":
+                full = abs(z[0])                                       # reference symbol: full amplitude
+                half = np.abs(z[1:]) < 0.75 * full
+                syms = syms | (half.astype(np.int64) << 3)
+            value = 0
+            for sym in syms.tolist():
+                value = (value << bits_per) | sym
+            raw = (value >> (nsym * bits_per - blen * 8)).to_bytes(blen, "big")
+            res = codec.rs_correct(raw, info.rs_len)
+            if res is None or not codec.check_crc(res[0], t):
+                ok = False
+                continue
+            block, fixed = res
+            fixed_total += fixed
+            payload += block[1:1 + block[0]]
+        extra["phase_error_deg"] = round(float(np.degrees(np.mean(qual))), 1)
+        return Decoded(t, info.name, sess, payload, ok, fixed_total, pos, end, extra)
 
     def decode_all(self, x: np.ndarray) -> list[Decoded]:
         out, pos = [], 0
