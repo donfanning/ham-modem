@@ -1,0 +1,17 @@
+[project]
+name = "ham-modem"
+version = "0.1.0.dev0"
+description = "AX.25 packet TNC whose radio channel is VoIP audio (SIP/IAX2 calls and conference bridges)"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.11"
+dependencies = ["numpy>=1.26"]
+
+[project.scripts]
+ham-modem = "hammodem.main:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["hammodem*"]

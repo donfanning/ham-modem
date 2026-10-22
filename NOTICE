@@ -1,0 +1,8 @@
+Ham-Modem is offered under GNU GPL version 3 or, at your option, any later version (SPDX: GPL-3.0-or-later).
+
+Parts are derived from El-Modem (https://github.com/donfanning/el-modem), same author and license:
+the HDLC receiver and FCS (v42_lapm._Hdlc, mnp_link.crc16_hdlc), and, as they are brought over, the serial
+backends, SIP/IAX2 transports and RTP receive path.
+
+The AFSK receiver follows the published designs of Thomas Sailer's soundmodem and John Langner WB2OSZ's
+Direwolf (correlator demodulator, slicer bank, PLL bit clock); no code was copied from either.
