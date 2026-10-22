@@ -22,7 +22,9 @@ import numpy as np
 from .afsk import _Fir, lowpass_taps
 from ..fx25 import Fx25Receiver
 from ..fx25 import burst_bits as fx25_burst_bits
-from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder
+from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, extend_bits, span_mask
+
+ERASE_TAIL = 18                         # NRZI (1) + descrambler taps (17): how far one bad line bit reaches
 
 SPS = 5                                 # internal samples per symbol
 BAUDS = (9600, 19200, 38400)
@@ -140,6 +142,10 @@ class G3ruhDemodulator:
         self.fx25 = Fx25Receiver()
         self._recent: dict[bytes, int] = {}
         self._bits_seen = 0
+        self._abs = 0                       # internal samples processed
+        self._spans: list[tuple[int, int]] = []
+        self._erase_delay = len(self._lp.taps) - 1
+        self._since = 1 << 30
         self.energy_dcd_dbfs = energy_dcd_dbfs
         self.energy_busy = False
         self.frames = 0
@@ -152,9 +158,15 @@ class G3ruhDemodulator:
     def bad_fcs(self) -> int:
         return self.hdlc.bad_fcs
 
-    def feed(self, pcm: np.ndarray | bytes) -> list[bytes]:
+    def feed(self, pcm: np.ndarray | bytes, erased: bool = False) -> list[bytes]:
         if isinstance(pcm, (bytes, bytearray, memoryview)):
             pcm = np.frombuffer(pcm, dtype="<i2")
+        n_int = len(pcm) * self.interp
+        if erased:
+            self._spans.append((self._abs, self._abs + n_int + self._erase_delay))
+        self._spans = [sp for sp in self._spans if sp[1] > self._abs]
+        self._mask = span_mask(self._spans, self._abs, n_int).tolist() if self._spans else None
+        self._abs += n_int
         x = np.asarray(pcm, dtype=np.float64) / 32768.0
         if self.energy_dcd_dbfs is not None and len(x):
             self.energy_busy = 10 * np.log10(np.mean(x * x) * 2 + 1e-12) > self.energy_dcd_dbfs
@@ -175,9 +187,11 @@ class G3ruhDemodulator:
     def _run(self, levels: list[bool]) -> list[bytes]:
         out: list[bytes] = []
         bits: list[int] = []
+        mask = self._mask
+        flags: list[bool] = []
         step, prev, phase, quality, run, ds = self.step, self.prev, self.phase, self.quality, self.run, self.desc_state
         nrzi, hdlc = self.nrzi, self.hdlc
-        for level in levels:
+        for i, level in enumerate(levels):
             level = 1 if level else 0
             if level != prev:
                 quality = quality * 0.96 + (0.04 if abs(phase) < 0.35 else -0.04)
@@ -194,10 +208,16 @@ class G3ruhDemodulator:
                 ds = ((ds << 1) | level) & 0x1FFFF
                 d = nrzi.decode(bit)
                 bits.append(d)
+                if mask is not None:
+                    flags.append(mask[i])
                 frame = hdlc.push(d)
                 if frame is not None:
                     out.append(frame)
         self.prev, self.phase, self.quality, self.run, self.desc_state = (
             prev, phase, max(-1.0, min(1.0, quality)), run, ds)
-        out += self.fx25.feed_bits(bits)
+        if flags:
+            ext, self._since = extend_bits(np.array(flags), self._since, ERASE_TAIL)
+        else:
+            ext, self._since = None, self._since + len(bits)
+        out += self.fx25.feed_bits(bits, ext)
         return _dedupe(self, out, len(bits))

@@ -26,6 +26,33 @@ class ReedSolomonTest(unittest.TestCase):
                         bad[p] ^= rng.randrange(1, 256)
                     self.assertEqual(rs.decode(bytes(bad)), (cw, errors), (nroots, n, errors))
 
+    def test_errors_and_erasures(self):
+        rng = random.Random(4)
+        for nroots in (16, 32, 64):
+            rs = fx25.ReedSolomon(nroots)
+            for n in (255, 96 + nroots):
+                data = bytes(rng.randrange(256) for _ in range(n - nroots))
+                cw = data + rs.encode(data)
+                for e, v in ((nroots, 0), (nroots // 2, nroots // 4), (nroots - 2, 1), (1, nroots // 2 - 1)):
+                    bad = bytearray(cw)
+                    pos = rng.sample(range(n), e + v)
+                    for p in pos:
+                        bad[p] ^= rng.randrange(1, 256)
+                    era = pos[:e]                                   # we know where e of them are
+                    res = rs.decode(bytes(bad), era)
+                    self.assertIsNotNone(res, (nroots, n, e, v))
+                    self.assertEqual(res[0], cw, (nroots, n, e, v))
+
+    def test_erasures_double_the_reach(self):
+        rs = fx25.ReedSolomon(16)
+        data = bytes(range(239))
+        cw = data + rs.encode(data)
+        bad = bytearray(cw)
+        for p in range(100, 116):                                  # a 16-byte hole, like a lost packet
+            bad[p] ^= 0x5A
+        self.assertIsNone(rs.decode(bytes(bad)))                   # 16 unknown errors: beyond 8
+        self.assertEqual(rs.decode(bytes(bad), list(range(100, 116)))[0], cw)
+
     def test_detects_too_many_errors(self):
         rng = random.Random(2)
         rs = fx25.ReedSolomon(16)

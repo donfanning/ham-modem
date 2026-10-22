@@ -26,10 +26,10 @@ import math
 import numpy as np
 
 from .afsk import _Fir, lowpass_taps
-from .g3ruh import Scrambler, _dedupe, raised_cosine
+from .g3ruh import ERASE_TAIL, Scrambler, _dedupe, raised_cosine
 from ..fx25 import Fx25Receiver
 from ..fx25 import burst_bits as fx25_burst_bits
-from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder
+from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, extend_bits, span_mask
 
 SPS = 5
 SQUELCH = 0.01                               # unit amplitude below which the loops hold (digital silence)
@@ -107,6 +107,11 @@ class PamDemodulator:
         self.fx25 = Fx25Receiver()
         self._recent: dict[bytes, int] = {}
         self._bits_seen = 0
+        self._abs = 0                        # internal samples received
+        self._buf_abs = 0                    # absolute internal index of _buf[0]
+        self._spans: list[tuple[int, int]] = []
+        self._erase_delay = len(self._lp.taps) - 1
+        self._since = 1 << 30
         self.energy_dcd_dbfs = energy_dcd_dbfs
         self.energy_busy = False
         self.frames = 0
@@ -119,9 +124,13 @@ class PamDemodulator:
     def bad_fcs(self) -> int:
         return self.hdlc.bad_fcs
 
-    def feed(self, pcm: np.ndarray | bytes) -> list[bytes]:
+    def feed(self, pcm: np.ndarray | bytes, erased: bool = False) -> list[bytes]:
         if isinstance(pcm, (bytes, bytearray, memoryview)):
             pcm = np.frombuffer(pcm, dtype="<i2")
+        n_int = len(pcm) * self.interp
+        if erased:
+            self._spans.append((self._abs, self._abs + n_int + self._erase_delay))
+        self._abs += n_int
         x = np.asarray(pcm, dtype=np.float64) / 32768.0
         if self.energy_dcd_dbfs is not None and len(x):
             self.energy_busy = 10 * np.log10(np.mean(x * x) * 2 + 1e-12) > self.energy_dcd_dbfs
@@ -148,6 +157,7 @@ class PamDemodulator:
         decay = 0.99 ** self.BLOCK
         levels: list[np.ndarray] = []
         amps: list[np.ndarray] = []
+        strobes: list[np.ndarray] = []
         while True:
             avail = int((n - 2 - self.pos) // self.period) + 1
             if avail <= 0:
@@ -186,9 +196,11 @@ class PamDemodulator:
             self.pos = float(p[-1]) + self.period + shift
             levels.append(y)
             amps.append(np.full(len(y), a))
+            strobes.append(p + self._buf_abs)
         keep = max(0, int(self.pos) - SPS)          # history for the half-symbol sample
         self._buf = buf[keep:]
         self.pos -= keep
+        self._buf_abs += keep
         self.quality = max(-1.0, min(1.0, self.quality))
         if not levels:
             return []
@@ -211,7 +223,15 @@ class PamDemodulator:
             frame = push(d)
             if frame is not None:
                 out.append(frame)
-        out += self.fx25.feed_bits(data)
+        ext = None
+        if self._spans:
+            at = np.concatenate(strobes).astype(np.int64)
+            sym = span_mask(self._spans, int(at[0]), int(at[-1] - at[0]) + 1)[at - at[0]]
+            ext, self._since = extend_bits(np.repeat(sym, 2), self._since, ERASE_TAIL)
+            self._spans = [sp for sp in self._spans if sp[1] > at[-1]]
+        else:
+            self._since += len(data)
+        out += self.fx25.feed_bits(data, ext)
         return _dedupe(self, out, len(data))
 
     @property

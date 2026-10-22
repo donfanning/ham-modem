@@ -125,3 +125,34 @@ class HdlcDecoder:
         if self.active:
             self.bits.append(0)
         return None
+
+
+# ------------------------------------------------------------------ erasure tracking (for FX.25)
+#
+# When the audio leg conceals a lost packet, the demodulator still produces bits for that stretch -- plausible
+# but wrong. Marking them lets the FX.25 decoder treat the bytes as erasures (twice the repair reach of unknown
+# errors). Demodulators keep the concealed spans on their own sample clock (widened by their filters' length)
+# and carry the mark forward in the bit domain over NRZI and descrambler memory.
+
+
+def span_mask(spans: list[tuple[int, int]], start: int, n: int):
+    """Boolean mask for samples [start, start + n) lying inside any (begin, end) span."""
+    import numpy as np  # noqa: PLC0415 -- keep this module importable without numpy for the codec-only users
+    mask = np.zeros(n, bool)
+    for b, e in spans:
+        lo, hi = max(b - start, 0), min(e - start, n)
+        if lo < hi:
+            mask[lo:hi] = True
+    return mask
+
+
+def extend_bits(mask, since: int, tail: int):
+    """Mark each bit within ``tail`` bits after an erased bit too. ``since``: bits since the last erased bit at
+    the end of the previous call. Returns (extended mask, new since)."""
+    import numpy as np  # noqa: PLC0415
+    n = len(mask)
+    if n == 0:
+        return np.zeros(0, bool), since
+    idx = np.arange(n)
+    last = np.maximum.accumulate(np.where(mask, idx, -since - 1))
+    return (idx - last) <= tail, int(n - 1 - last[-1])

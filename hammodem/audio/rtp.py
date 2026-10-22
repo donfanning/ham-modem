@@ -24,6 +24,10 @@ CONCEAL_MAX_FRAMES = 5
 MAX_GAP_SAMPLES = 8000
 
 
+class ConcealedPcm(np.ndarray):
+    """Samples standing in for lost packets; demodulators turn the bits they yield into FX.25 erasures."""
+
+
 @dataclass(frozen=True)
 class Codec:
     name: str              # SDP encoding name
@@ -116,5 +120,5 @@ class RtpSession:
 
     def _conceal(self, missing: int) -> np.ndarray:
         if missing > CONCEAL_MAX_FRAMES * self._rx_len:
-            return np.zeros(missing, np.int16)
-        return np.resize(self._last, missing)
+            return np.zeros(missing, np.int16).view(ConcealedPcm)
+        return np.resize(self._last, missing).view(ConcealedPcm)

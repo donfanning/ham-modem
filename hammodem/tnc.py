@@ -77,8 +77,8 @@ class Tnc:
     def dcd(self) -> bool:
         return self.demod.dcd
 
-    def audio_in(self, pcm: np.ndarray | bytes) -> list[bytes]:
-        frames = self.demod.feed(pcm)
+    def audio_in(self, pcm: np.ndarray | bytes, erased: bool = False) -> list[bytes]:
+        frames = self.demod.feed(pcm, erased)
         for f in frames:
             self.heard += 1
             self._monitor("rx", f)

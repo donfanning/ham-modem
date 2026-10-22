@@ -54,6 +54,7 @@ def main():
     ap.add_argument("--modem", default="afsk1200")
     ap.add_argument("--collision-detect", action="store_true")
     ap.add_argument("--fx25", type=int, default=0)
+    ap.add_argument("--repeat", type=int, default=1)
     ap.add_argument("--base-port", type=int, default=18100)
     args = ap.parse_args()
 
@@ -66,6 +67,8 @@ def main():
             cmd.append("--collision-detect")
         if args.fx25:
             cmd += ["--fx25", str(args.fx25)]
+        if args.repeat > 1:
+            cmd += ["--repeat", str(args.repeat)]
         if i == 0 and args.tap:
             cmd += ["--audio-tap", args.tap]
         log = open(f"/tmp/ham-station{i}.log", "w")
@@ -109,7 +112,7 @@ def main():
             log.close()
 
     total = got = 0
-    print(f"{args.modem}{' CSMA/CD' if args.collision_detect else ''}{f' FX.25/{args.fx25}' if args.fx25 else ''}: "
+    print(f"{args.modem}{' CSMA/CD' if args.collision_detect else ''}{f' FX.25/{args.fx25}' if args.fx25 else ''}{f' x{args.repeat}' if args.repeat > 1 else ''}: "
           f"{args.stations} stations, {args.frames} frames each, simulated loss {args.loss:.1%}")
     print("receiver \\ sender  " + "  ".join(f"st{j:<4}" for j in range(args.stations)))
     for i in range(args.stations):

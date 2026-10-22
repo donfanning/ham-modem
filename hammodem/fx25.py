@@ -89,17 +89,30 @@ class ReedSolomon:
                         rem[i] ^= _EXP[lf + _LOG[g[i + 1]]]
         return bytes(rem)
 
-    def decode(self, codeword: bytes) -> tuple[bytes, int] | None:
-        """Corrected codeword and the number of byte errors fixed, or None if uncorrectable."""
+    def decode(self, codeword: bytes, erasures: list[int] | None = None) -> tuple[bytes, int] | None:
+        """Corrected codeword and the number of bytes changed, or None if uncorrectable.
+
+        ``erasures``: positions known to be bad (e.g. demodulated from concealed audio). Errors-and-erasures
+        decoding fixes v errors plus e erasures whenever 2v + e <= nroots -- twice the reach for known damage.
+        """
         r = list(codeword)
         n = len(r)
         synd = [_poly_eval(r, _EXP[self.FCR + j]) for j in range(self.nroots)]
         if not any(synd):
             return bytes(r), 0
-        # Berlekamp-Massey: error locator, lowest degree first.
-        lam, b = [1], [1]
-        L, m, bb = 0, 1, 1
-        for k in range(self.nroots):
+        era = sorted(set(p for p in erasures or [] if 0 <= p < n))
+        if len(era) > self.nroots:
+            era = []                                  # too many to use: fall back to errors-only decoding
+        e = len(era)
+        # Erasure locator Gamma(x) = prod(1 + X_j x), X_j = a^(n-1-p); lowest degree first.
+        gamma = [1]
+        for p in era:
+            xj = _EXP[(n - 1 - p) % 255]
+            gamma = [a ^ _mul(b, xj) for a, b in zip(gamma + [0], [0] + gamma)]
+        # Berlekamp-Massey seeded with Gamma (Blahut's errors-and-erasures form): errata locator.
+        lam, b = gamma[:], gamma[:]
+        L, m, bb = e, 1, 1
+        for k in range(e, self.nroots):
             d = synd[k]
             for i in range(1, L + 1):
                 if i < len(lam):
@@ -112,13 +125,13 @@ class ReedSolomon:
             shifted = [0] * m + [_mul(coef, c) for c in b]
             lam = [(lam[i] if i < len(lam) else 0) ^ (shifted[i] if i < len(shifted) else 0)
                    for i in range(max(len(lam), len(shifted)))]
-            if 2 * L <= k:
-                L, b, bb, m = k + 1 - L, t, d, 1
+            if 2 * L <= k + e:
+                L, b, bb, m = k + 1 - L + e, t, d, 1
             else:
                 m += 1
         while len(lam) > 1 and lam[-1] == 0:
             lam.pop()
-        if len(lam) - 1 != L or L > self.nroots // 2:
+        if len(lam) - 1 != L or 2 * (L - e) + e > self.nroots:
             return None
         # Chien search over the (shortened) codeword: position p (0 = first byte) has locator X = a^(n-1-p).
         positions = []
@@ -232,23 +245,27 @@ class Fx25Receiver:
         self.frames = 0
         self.corrected = 0
         self.failed = 0
+        self.erasures = 0                  # bytes marked erased from concealed audio
 
-    def feed_bits(self, bits) -> list[bytes]:
+    def feed_bits(self, bits, erased=None) -> list[bytes]:
+        """``erased``: optional per-bit mask of bits demodulated from concealed audio."""
         bits = np.asarray(bits, np.uint8)
+        erased = np.zeros(len(bits), bool) if erased is None else np.asarray(erased, bool)
         out: list[bytes] = []
         pos = 0
         while pos < len(bits):
             if self.collect is not None:
                 tag, n, k, chunks, have = self.collect
                 take = min(8 * n - have, len(bits) - pos)
-                chunks.append(bits[pos:pos + take])
+                chunks.append((bits[pos:pos + take], erased[pos:pos + take]))
                 have += take
                 pos += take
                 if have < 8 * n:
                     self.collect = (tag, n, k, chunks, have)
                     break
                 self.collect = None
-                frame = self._finish(np.concatenate(chunks), n, k)
+                frame = self._finish(np.concatenate([c[0] for c in chunks]), n, k,
+                                     np.concatenate([c[1] for c in chunks]))
                 if frame is not None:
                     out.append(frame)
                 self.hist = np.zeros(63, np.uint8)       # tags never overlap a codeword just decoded
@@ -272,11 +289,16 @@ class Fx25Receiver:
             self.hist = np.zeros(63, np.uint8)
         return out
 
-    def _finish(self, bits: np.ndarray, n: int, k: int) -> bytes | None:
+    def _finish(self, bits: np.ndarray, n: int, k: int, erased: np.ndarray | None = None) -> bytes | None:
         rx = _bits_to_bytes(bits)
         nroots = n - k
         pad = 255 - nroots - k
-        res = _rs(nroots).decode(rx[:k] + bytes(pad) + rx[k:])   # re-insert the shortening zeros
+        era = []
+        if erased is not None and erased.any():
+            bad = np.flatnonzero(erased.reshape(-1, 8).any(axis=1))
+            era = [int(p) if p < k else int(p) + pad for p in bad]        # into the padded 255-byte layout
+            self.erasures += len(era)
+        res = _rs(nroots).decode(rx[:k] + bytes(pad) + rx[k:], era)   # re-insert the shortening zeros
         if res is None:
             self.failed += 1
             return None

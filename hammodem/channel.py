@@ -7,6 +7,11 @@ otherwise. Sending silence rather than nothing keeps RTP and conference bridges 
 Parameters follow KISS: TXDELAY, SLOTTIME and TXTAIL in seconds here (10 ms units on the wire), PERSIST 0-255
 (transmit on a free slot with probability (P+1)/256), FULLDUPLEX skips carrier sense.
 
+``repeat`` (time diversity, for the fast modes): each burst carries its frames ``repeat`` times, as whole rounds
+separated by ``repeat_gap`` seconds of flags, so one lost packet cannot hit both copies of a frame. Receivers
+drop the duplicate. At 57.6 kbit/s a lost 20 ms packet is 144 bytes -- more than any FX.25 code repairs -- while
+a second copy of a 256-byte frame costs only ~36 ms of air time.
+
 ``collision_detect`` (CSMA/CD) is for conference bridges only: a bridge never returns a station's own audio, so
 carrier heard *while we transmit* is another station keyed up on top of us. The burst is cut off, its frames go
 back to the head of the queue, and the next attempt waits a random 1..2^k slots (k = attempts, capped), dropping
@@ -25,12 +30,14 @@ import numpy as np
 class Channel:
     def __init__(self, modulator, fs: int, *, txdelay: float = 0.3, persist: int = 63, slottime: float = 0.1,
                  txtail: float = 0.03, fullduplex: bool = False, maxframe: int = 7, max_queue: int = 64,
-                 collision_detect: bool = False, max_attempts: int = 8, rng: random.Random | None = None) -> None:
+                 collision_detect: bool = False, max_attempts: int = 8, repeat: int = 1, repeat_gap: float = 0.04,
+                 rng: random.Random | None = None) -> None:
         self.mod, self.fs = modulator, fs
         self.txdelay, self.persist, self.slottime = txdelay, persist, slottime
         self.txtail, self.fullduplex, self.maxframe = txtail, fullduplex, maxframe
         self.queue: deque[bytes] = deque(maxlen=max_queue)
         self.collision_detect, self.max_attempts = collision_detect, max_attempts
+        self.repeat, self.repeat_gap = max(1, repeat), repeat_gap
         self.rng = rng or random.Random()
         self._burst_frames: list[bytes] = []
         self._attempts = 0
@@ -59,7 +66,7 @@ class Channel:
                 self.deferrals += 1
             elif self.fullduplex or self.rng.random() < (self.persist + 1) / 256:
                 frames = [self.queue.popleft() for _ in range(min(self.maxframe, len(self.queue)))]
-                self._burst = self.mod.modulate(frames, self.txdelay, self.txtail)
+                self._burst = self._render(frames)
                 self._burst_frames = frames
                 self.bursts += 1
                 self.frames_sent += len(frames)
@@ -71,6 +78,17 @@ class Channel:
         if len(out) < n:
             out = np.concatenate((out, np.zeros(n - len(out), np.int16)))
         return out
+
+    def _render(self, frames: list[bytes]) -> np.ndarray:
+        if self.repeat == 1:
+            return self.mod.modulate(frames, self.txdelay, self.txtail)
+        # Rounds back to back on one carrier: the gap is sent as flags (tail of one round), so the far end
+        # keeps clock and scrambler lock.
+        parts = [self.mod.modulate(frames, self.txdelay, self.repeat_gap)]
+        for r in range(1, self.repeat):
+            last = r == self.repeat - 1
+            parts.append(self.mod.modulate(frames, 0.0, self.txtail if last else self.repeat_gap))
+        return np.concatenate(parts)
 
     def _collided(self) -> None:
         self.collisions += 1

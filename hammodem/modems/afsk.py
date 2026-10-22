@@ -23,7 +23,7 @@ import numpy as np
 
 from ..fx25 import Fx25Receiver
 from ..fx25 import burst_bits as fx25_burst_bits
-from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder
+from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, extend_bits, span_mask
 
 
 @dataclass(frozen=True)
@@ -112,7 +112,7 @@ class AfskModulator:
 class _Slicer:
     """One decision threshold: PLL bit clock, NRZI decoder, HDLC receiver and a carrier-quality score."""
 
-    __slots__ = ("gain", "phase", "prev", "nrzi", "hdlc", "fx25", "quality", "run")
+    __slots__ = ("gain", "phase", "prev", "nrzi", "hdlc", "fx25", "quality", "run", "since")
 
     def __init__(self, gain: float) -> None:
         self.gain = gain
@@ -123,6 +123,7 @@ class _Slicer:
         self.fx25 = Fx25Receiver()
         self.quality = 0.0
         self.run = 0                      # bits since the last transition
+        self.since = 1 << 30              # bits since the last erased bit
 
 
 class AfskDemodulator:
@@ -149,6 +150,8 @@ class AfskDemodulator:
         self._mark_lp = _Fir(win / win.sum(), np.complex128)
         self._space_lp = _Fir(win / win.sum(), np.complex128)
         nlp = int(round(spb * 1.5)) | 1
+        self._erase_delay = (nbp - 1) + (nwin - 1) + (nlp - 1)   # an input sample reaches this far into the output
+        self._spans: list[tuple[int, int]] = []
         self._post = _Fir(lowpass_taps(profile.baud * profile.lowpass_bits, fs, nlp), np.float64)
         self._post_s = _Fir(lowpass_taps(profile.baud * profile.lowpass_bits, fs, nlp), np.float64)
         self._wm = 2 * np.pi * profile.mark / fs
@@ -168,9 +171,14 @@ class AfskDemodulator:
     def bad_fcs(self) -> int:
         return max(s.hdlc.bad_fcs for s in self.slicers)
 
-    def feed(self, pcm: np.ndarray | bytes) -> list[bytes]:
+    def feed(self, pcm: np.ndarray | bytes, erased: bool = False) -> list[bytes]:
+        """``erased``: these samples conceal lost packets (bits from them become FX.25 erasures)."""
         if isinstance(pcm, (bytes, bytearray, memoryview)):
             pcm = np.frombuffer(pcm, dtype="<i2")
+        if erased:
+            self._spans.append((self.samples, self.samples + len(pcm) + self._erase_delay))
+        self._spans = [sp for sp in self._spans if sp[1] > self.samples]
+        self._mask = span_mask(self._spans, self.samples, len(pcm)).tolist() if self._spans else None
         x = self._bp(np.asarray(pcm, dtype=np.float64) / 32768.0)
         if self.energy_dcd_dbfs is not None and len(x):
             self.energy_busy = 10 * np.log10(np.mean(x * x) * 2 + 1e-12) > self.energy_dcd_dbfs
@@ -206,6 +214,8 @@ class AfskDemodulator:
         step, prev, phase, quality, run = self.step, s.prev, s.phase, s.quality, s.run
         nrzi, hdlc = s.nrzi, s.hdlc
         bits: list[int] = []
+        mask = self._mask
+        flags: list[bool] = []
         for i, level in enumerate(levels):
             level = 1 if level else 0
             if level != prev:
@@ -222,9 +232,15 @@ class AfskDemodulator:
                     quality = max(-1.0, quality - 0.1)
                 bit = nrzi.decode(level)
                 bits.append(bit)
+                if mask is not None:
+                    flags.append(mask[i])
                 frame = hdlc.push(bit)
                 if frame is not None:
                     self._emit(frame, base + i, out)
         s.prev, s.phase, s.quality, s.run = prev, phase, max(-1.0, min(1.0, quality)), run
-        for frame in s.fx25.feed_bits(bits):
+        if flags:
+            ext, s.since = extend_bits(np.array(flags), s.since, 1)
+        else:
+            ext, s.since = None, s.since + len(bits)
+        for frame in s.fx25.feed_bits(bits, ext):
             self._emit(frame, base + len(levels), out)

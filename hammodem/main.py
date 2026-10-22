@@ -17,12 +17,14 @@ import signal
 import socket
 import time
 
+import numpy as np
+
 from .agw import AgwServer
 from .kiss_tcp import KissTcpServer
 from .modems import MODEMS, default_rate
 from .serial import DeviceSerial, PtySerial
 from .tnc import Tnc
-from .audio.rtp import CODECS
+from .audio.rtp import CODECS, ConcealedPcm
 from .audio.sip import SipLeg
 from .audio.udp import UdpAudio
 
@@ -81,7 +83,7 @@ class Runtime:
             for srv in self.servers:
                 srv.service(r, w)
             for block in self.audio.service(r):
-                self.tnc.audio_in(block)
+                self.tnc.audio_in(np.asarray(block), isinstance(block, ConcealedPcm))
                 if self._tap_sock is not None:
                     try:
                         self._tap_sock.sendto(block.astype("<i2").tobytes(), self.tap)
@@ -150,6 +152,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--fx25", type=int, choices=(0, 16, 32, 64), default=0,
                     help="send frames FX.25-wrapped with this many Reed-Solomon check bytes (receive always "
                          "accepts FX.25; plain AX.25 stations still decode FX.25 frames)")
+    ap.add_argument("--repeat", type=int, default=1, metavar="N",
+                    help="send every frame N times, spaced so one lost packet cannot hit all copies "
+                         "(for the fast modes; receivers drop duplicates)")
     ap.add_argument("--collision-detect", action="store_true",
                     help="CSMA/CD for conference rooms: abort and retry when another station keys up over us "
                          "(not for echo or two-party calls)")
@@ -168,7 +173,7 @@ def main(argv: list[str] | None = None) -> None:
 
     try:
         tnc = Tnc(args.modem, args.rate, txdelay=args.txdelay / 1000, persist=args.persist,
-                  slottime=args.slottime / 1000, txtail=args.txtail / 1000, collision_detect=args.collision_detect, fx25=args.fx25)
+                  slottime=args.slottime / 1000, txtail=args.txtail / 1000, collision_detect=args.collision_detect, fx25=args.fx25, repeat=args.repeat)
     except ValueError as exc:
         ap.error(str(exc))
     if args.monitor:
