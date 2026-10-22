@@ -34,9 +34,9 @@ class ArdopcfRecordingsTest(unittest.TestCase):
         self.assertEqual((d.name, d.extra["target"]), ("Ping", "K1ABC"))
 
 
-    def test_psk_qam_data(self):
+    def test_psk_qam_and_600_baud_data(self):
         for name, mode in (("psk4_200_100S", "4PSK.200.100S.E"), ("psk8_500_100", "8PSK.500.100.E"),
-                           ("qam16_2000_100", "16QAM.2000.100.E")):
+                           ("qam16_2000_100", "16QAM.2000.100.E"), ("fsk2000_600S", "4FSK.2000.600S.E")):
             (d,) = Receiver().decode_all(load(name))
             self.assertEqual((d.name, d.ok), (mode, True))
             self.assertTrue(d.data.startswith(b"ham-modem ARDOP"))
@@ -44,7 +44,8 @@ class ArdopcfRecordingsTest(unittest.TestCase):
     def test_transmitter_matches_ardopcf_sample_for_sample(self):
         """Re-modulating the decoded bytes reproduces ardopcf's waveform (leader, type, data, trailer, TX filter)
         to within rounding."""
-        for name in ("fsk200_50S", "fsk500_100S", "psk4_200_100S", "psk8_500_100", "qam16_2000_100"):
+        for name in ("fsk200_50S", "fsk500_100S", "psk4_200_100S", "psk8_500_100", "qam16_2000_100",
+                     "fsk2000_600S"):
             ref = load(name)
             (d,) = Receiver().decode_all(ref)
             ours = m.modulate(m.encode_fsk_data(d.frame_type, d.data, 0xFF)).astype(float)
@@ -70,10 +71,10 @@ class NativeRoundTripTest(unittest.TestCase):
         (d,) = self.frame(m.encode_dataack(60, 0x5A, nak=True))
         self.assertEqual(d.name, "DataNAK q11")
 
-    def test_psk_qam_all_modes(self):
+    def test_psk_qam_and_600_baud_all_modes(self):
         rng = np.random.default_rng(7)
         for info in codec.FRAMES.values():
-            if info.mod not in m.BITS:
+            if info.mod not in m.BITS and info.baud != 600:
                 continue
             data = rng.integers(0, 256, info.data_len * info.carriers, dtype=np.uint8).tobytes()
             (d,) = self.frame(m.encode_fsk_data(info.code, data, 0x5A), noise=300)

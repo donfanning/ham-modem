@@ -11,7 +11,8 @@ An independent receiver design (not a port of ardopcf's SoundInput.c), checked a
 * 4FSK data: per symbol, the four tone energies (50 or 100 baud); hard decision -> bytes -> Reed-Solomon -> CRC.
 * PSK/QAM data (100 baud, 1-8 carriers): per carrier, each 120-sample symbol correlated with the half-sine-windowed
   carrier; the phase change from the previous symbol (starting from the reference symbol) gives the symbol, and for
-  16QAM the magnitude relative to the reference symbol gives bit 3. 600 baud FM frames are identified but skipped.
+  16QAM the magnitude relative to the reference symbol gives bit 3.
+* 600 baud "FM only" 4FSK: as 4FSK data, 20-sample symbols on 600/1200/1800/2400 Hz (4FSK.2000.600: three RS blocks).
 """
 
 from __future__ import annotations
@@ -41,9 +42,11 @@ class Decoded:
 
 def frame_samples(info: codec.FrameInfo) -> int:
     """Samples after the frame-type symbols (carriers run in parallel; PSK/QAM add one reference symbol)."""
-    block = info.data_len + 3 + info.rs_len if info.data_len else 0
     if info.mod == "4FSK":
-        return block * 4 * FS // info.baud
+        nblocks, dlen, rlen = modulate.fsk_blocks(info)
+        per_car = (dlen + 3 + rlen) * (nblocks if nblocks != info.carriers else 1) if info.data_len else 0
+        return per_car * 4 * FS // info.baud
+    block = info.data_len + 3 + info.rs_len
     bits = {"4PSK": 2, "8PSK": 3, "16QAM": 4}[info.mod]
     return (-(-block * 8 // bits) + 1) * FS // info.baud
 
@@ -92,11 +95,19 @@ class Receiver:
                 signs.append(np.sign(c))
                 if len(signs) >= 2 and signs[-1] == signs[-2]:
                     if len(signs) - 1 >= self.MIN_LEADER_SYMBOLS - 1:
-                        return p + LEADER_SYM          # frame type starts after the sync symbol
+                        return self._fine_timing(x, p + LEADER_SYM)   # frame type starts after the sync symbol
                     break
                 p += LEADER_SYM
             pos = best + LEADER_SYM
         return None
+
+    def _fine_timing(self, x: np.ndarray, start: int) -> int:
+        """|correlation| with the leader has peaks every 4 samples (half a 1500 Hz cycle), enough for 50/100 baud but
+        not for 600 baud (20-sample symbols). The last two leader symbols (the sync pair) are always positive, so
+        the signed correlation over them picks the right carrier phase."""
+        def score(q):
+            return self._corr(x, q - LEADER_SYM) + self._corr(x, q - 2 * LEADER_SYM) if q >= 2 * LEADER_SYM else -9
+        return max(range(start - 5, start + 6), key=score)
 
     # ------------------------------------------------------------------ frame type
 
@@ -125,7 +136,7 @@ class Receiver:
 
     def _fsk_bytes(self, x: np.ndarray, pos: int, nbytes: int, baud: int) -> tuple[bytes, int]:
         n = FS // baud
-        freqs = modulate.FSK50 if baud == 50 else modulate.FSK100
+        freqs = {50: modulate.FSK50, 100: modulate.FSK100, 600: modulate.FSK600}[baud]
         out = bytearray()
         p = pos
         for _ in range(nbytes):
@@ -149,9 +160,6 @@ class Receiver:
         extra = {"type_score": round(score, 3)}
         if info.mod in modulate.BITS:
             return self._decode_psk(x, t, info, sess, pos, p, extra)
-        if info.mod != "4FSK" or info.baud == 600:
-            return Decoded(t, info.name, sess, None, False, 0, pos, p + frame_samples(info),
-                           dict(extra, unsupported=info.mod))
         if t in (codec.IDFRAME, codec.PING) or t in codec.CONREQ.values():
             raw, p = self._fsk_bytes(x, p, 16, 50)
             res = codec.rs_correct(raw, 4)
@@ -172,10 +180,12 @@ class Receiver:
             return Decoded(t, info.name, sess, None, True, 0, pos, p, extra)
         payload = b""
         ok, fixed_total = True, 0
-        for _ in range(info.carriers):
-            blen = info.data_len + 3 + info.rs_len
-            raw, p = self._fsk_bytes(x, p, blen, info.baud)
-            res = codec.rs_correct(raw, info.rs_len)
+        nblocks, dlen, rlen = modulate.fsk_blocks(info)
+        if p + frame_samples(info) > len(x):
+            return Decoded(t, info.name, sess, None, False, 0, pos, len(x), dict(extra, truncated=True))
+        for _ in range(nblocks):
+            raw, p = self._fsk_bytes(x, p, dlen + 3 + rlen, info.baud)
+            res = codec.rs_correct(raw, rlen)
             if res is None or not codec.check_crc(res[0], t):
                 ok = False
                 continue

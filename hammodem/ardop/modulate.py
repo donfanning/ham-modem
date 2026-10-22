@@ -9,7 +9,8 @@ Ported from ardopcf (MIT; Muething, Wiseman, LaRue) -- ``ARDOPC.c`` Encode* and 
   50 baud on 1425/1475/1525/1575 Hz;
 * 4FSK data: each encoded byte as four symbols, MSB first, at 50 baud (tones above) or 100 baud
   (1350/1450/1550/1650 Hz), amplitude 1.1 x 26000; every other symbol is negated (the templates start at phase 0,
-  so this keeps the waveform continuous at symbol boundaries);
+  so this keeps the waveform continuous at symbol boundaries); 600 baud "FM only" frames use 600/1200/1800/2400 Hz
+  (whole cycles per 20-sample symbol, no negation); 4FSK.2000.600 carries three sequential RS blocks;
 * a trailer of 1 + trailer_ms/10 symbols of the 1500 Hz PSK carrier (phase 0, unscaled);
 * ardopcf's frequency-sampling TX filter on the result (200 Hz wide for 50 baud frames, 500 Hz for 100 baud
   4FSK, 200/500/1000/2000 Hz for 1/2/4/8-carrier PSK), then a hard clip at +-32700;
@@ -32,6 +33,7 @@ from .codec import SAMPLE_RATE as FS
 AMP = 26000
 FSK50 = (1425.0, 1475.0, 1525.0, 1575.0)
 FSK100 = (1350.0, 1450.0, 1550.0, 1650.0)
+FSK600 = (600.0, 1200.0, 1800.0, 2400.0)          # 600 baud "FM only" frames: whole cycles per symbol
 
 
 def _template(freq: float, n: int) -> np.ndarray:
@@ -40,6 +42,7 @@ def _template(freq: float, n: int) -> np.ndarray:
 
 _T50 = [_template(f, 240) for f in FSK50]
 _T100 = [_template(f, 120) for f in FSK100]
+_T600 = [np.trunc(_template(f, 20)) for f in FSK600]
 _k = np.arange(240)
 _LEADER = AMP * 0.55 * (np.sin(1475 / 1500 * _k / 8 * 2 * np.pi) - np.sin(1525 / 1500 * _k / 8 * 2 * np.pi))
 
@@ -56,8 +59,19 @@ def leader_and_sync(leader_ms: int) -> np.ndarray:
 
 
 def _fsk_symbols(symbols: list[int], baud: int, start_index: int = 0) -> np.ndarray:
+    if baud == 600:                                    # integer cycles per symbol: no sign alternation
+        return np.concatenate([_T600[s] for s in symbols])
     tpl = _T50 if baud == 50 else _T100
     return np.concatenate([tpl[s] * (1 if ((start_index + i) & 1) == 0 else -1) for i, s in enumerate(symbols)])
+
+
+def fsk_blocks(info: codec.FrameInfo) -> tuple[int, int, int]:
+    """(RS blocks, data bytes per block, RS bytes per block): one per carrier, except 4FSK.2000.600, whose 600-byte
+    data field is sent as three sequential blocks of 200 + 50 RS (ardopcf's EncodeFSKData: baud 600 and data_len
+    >= 600; 4FSK.2000.600S is a single 200 + 50 block)."""
+    if info.baud == 600 and info.data_len >= 600:
+        return 3, info.data_len // 3, info.rs_len // 3
+    return info.carriers, info.data_len, info.rs_len
 
 
 _FS_WEIGHTS = {200: {14: 0.7389, 16: 0.7389, 15: -1.0},
@@ -104,8 +118,8 @@ def _trailer(trailer_ms: int) -> np.ndarray:
 def modulate_4fsk(encoded: bytes, leader_ms: int = 240, trailer_ms: int = 20) -> np.ndarray:
     """Waveform for an encoded 4FSK frame (``encoded[0:2]`` = frame type bytes, then the per-carrier data)."""
     info = codec.FRAMES[encoded[0]]
-    if info.mod != "4FSK" or info.baud not in (50, 100):
-        raise ValueError(f"{info.name}: not a 50/100 baud 4FSK frame")
+    if info.mod != "4FSK":
+        raise ValueError(f"{info.name}: not a 4FSK frame")
     type_part = []
     for j in range(2):
         b = encoded[j]
@@ -115,7 +129,7 @@ def modulate_4fsk(encoded: bytes, leader_ms: int = 240, trailer_ms: int = 20) ->
     data_syms = [(b >> (2 * (3 - k))) & 3 for b in encoded[2:] for k in range(4)]
     body = _fsk_symbols(data_syms, info.baud) if data_syms else np.zeros(0)
     x = np.concatenate((head, body, _trailer(trailer_ms)))
-    x = _bandpass(x, 200 if info.baud == 50 else 500)
+    x = _bandpass(x, {50: 200, 100: 500, 600: 2000}[info.baud])
     return np.clip(np.round(x), -32768, 32767).astype(np.int16)
 
 
@@ -194,17 +208,15 @@ def modulate(encoded: bytes, leader_ms: int = 240, trailer_ms: int = 20) -> np.n
 # ---------------------------------------------------------------------------------------------- encoders
 
 def encode_fsk_data(frame_type: int, data: bytes, session: int) -> bytes:
-    """[type, type ^ session] + per carrier: count, data padded to data_len, CRC16 (^ type), RS parity."""
-    info = codec.FRAMES[frame_type]
-    if info.baud == 600:
-        raise NotImplementedError("600 baud FM frames")
+    """[type, type ^ session] + per carrier (or per 600 baud block): count, data padded, CRC16 (^ type), RS."""
+    nblocks, dlen, rlen = fsk_blocks(codec.FRAMES[frame_type])
     out = bytes((frame_type, frame_type ^ session))
     pos = 0
-    for _ in range(info.carriers):
-        chunk = data[pos:pos + info.data_len]
+    for _ in range(nblocks):
+        chunk = data[pos:pos + dlen]
         pos += len(chunk)
-        block = bytes((len(chunk),)) + chunk + bytes(info.data_len - len(chunk))
-        out += codec.rs_append(codec.append_crc(block, frame_type), info.rs_len)
+        block = bytes((len(chunk),)) + chunk + bytes(dlen - len(chunk))
+        out += codec.rs_append(codec.append_crc(block, frame_type), rlen)
     return out
 
 
