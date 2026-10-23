@@ -17,8 +17,13 @@ from ..amtor.tnc import AmtorTnc
 class KeyboardTnc:
     LEAD, TAIL = 0.3, 0.25
 
-    def __init__(self, name: str, mod, demod, fs: int = 8000, write=None) -> None:
+    def __init__(self, name: str, mod, demod, fs: int = 8000, write=None,
+                 lead: float | None = None, tail: float | None = None) -> None:
         self.name, self.mod, self.demod, self.fs = name, mod, demod, fs
+        if lead is not None:
+            self.LEAD = lead
+        if tail is not None:
+            self.TAIL = tail
         self.write = write or (lambda b: None)
         self._tx = np.zeros(0, np.int16)
         self._line = ""
