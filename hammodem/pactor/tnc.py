@@ -32,6 +32,7 @@ class PactorTnc:
                  shift: float = fsk.SHIFT, longpath: bool = False) -> None:
         self.write = write or (lambda b: None)
         self.fs = fs
+        self.center, self.shift = center, shift
         self.station = PactorStation(mycall, fs, center, shift, longpath=longpath,
                                      on_text=self._rx_text, on_event=self._event)
         self.mode = "arq"
@@ -128,7 +129,7 @@ class PactorTnc:
     def audio_out(self, n: int) -> np.ndarray:
         rx = self._take(n)
         out = self.station.process(rx)
-        if self.mode == "fec" and self.station.state == "standby" and self._fec_queue:
+        if self.mode == "fec" and self.station.state == "standby" and (self._fec_queue or len(self._fec_audio)):
             out = self._fec_tx(out, n)
         return out
 

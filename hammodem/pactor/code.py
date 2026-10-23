@@ -154,6 +154,36 @@ def huffman_encode(data: bytes) -> tuple[bytes, int]:
     return bytes(out[:nbytes]), total_bits
 
 
+def huffman_fill_idle(buf: bytearray, start_bit: int, end_bit: int) -> None:
+    """Fill bits [start_bit, end_bit) with Huffman IDLE codes.
+
+    Remaining bits after the last complete IDLE are filled with the start of
+    another IDLE code (truncated).  Since IDLE is the longest code (15 bits),
+    the decoder sees an incomplete code and stops cleanly.
+    """
+    idle_len, idle_code = _HUFFMAN[IDLE]
+    pos = start_bit
+    while pos + idle_len <= end_bit:
+        byte_idx = pos >> 3
+        bit_off = pos & 7
+        shifted = idle_code << bit_off
+        buf[byte_idx] |= shifted & 0xFF
+        if byte_idx + 1 < len(buf):
+            buf[byte_idx + 1] |= (shifted >> 8) & 0xFF
+        if byte_idx + 2 < len(buf):
+            buf[byte_idx + 2] |= (shifted >> 16) & 0xFF
+        pos += idle_len
+    remain = end_bit - pos
+    if remain > 0:
+        byte_idx = pos >> 3
+        bit_off = pos & 7
+        mask = (1 << remain) - 1
+        partial = (idle_code & mask) << bit_off
+        buf[byte_idx] |= partial & 0xFF
+        if byte_idx + 1 < len(buf):
+            buf[byte_idx + 1] |= (partial >> 8) & 0xFF
+
+
 def huffman_decode(packed: bytes, nbits: int) -> bytes:
     """Decode Huffman-coded bits. Stops at ``nbits`` or when no code matches."""
     out = bytearray()
