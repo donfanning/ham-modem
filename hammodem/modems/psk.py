@@ -31,7 +31,7 @@ from .afsk import _Fir, lowpass_taps
 from .g3ruh import _dedupe
 from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, track_burst
 
-CARRIER = 1800.0
+CARRIER = 1800.0            # default carrier frequency (Hz); kept for backward compatibility
 
 
 @dataclass(frozen=True)
@@ -42,11 +42,20 @@ class PskProfile:
     step_deg: float              # phase step per Gray index
     offset_deg: float            # extra rotation each symbol (V.26 B)
     gray_to_phase: tuple[int, ...]
+    carrier: float = CARRIER     # audio carrier frequency (Hz)
 
 
 QPSK = PskProfile("psk2400", 1200, 2, 90.0, 45.0, (0, 1, 3, 2))
 PSK8 = PskProfile("psk4800", 1600, 3, 45.0, 0.0, (1, 0, 2, 3, 6, 7, 5, 4))
-PROFILES = {p.name: p for p in (QPSK, PSK8)}
+
+# NinoTNC HF/VHF PSK modes (IL2Pc framing, 1500 Hz or 1650 Hz carrier)
+# BPSK: 1 bit/symbol, differential 0/180 deg
+NINO_BPSK300  = PskProfile("ninobpsk300",  300,  1, 180.0, 0.0, (0, 1), 1500.0)
+NINO_BPSK1200 = PskProfile("ninobpsk1200", 1200, 1, 180.0, 0.0, (0, 1), 1500.0)
+NINO_QPSK600  = PskProfile("ninopsk600",   300,  2, 90.0, 45.0, (0, 1, 3, 2), 1500.0)
+NINO_QPSK3600 = PskProfile("ninopsk3600",  1800, 2, 90.0, 45.0, (0, 1, 3, 2), 1650.0)
+
+PROFILES = {p.name: p for p in (QPSK, PSK8, NINO_BPSK300, NINO_BPSK1200, NINO_QPSK600, NINO_QPSK3600)}
 
 
 def _sps(baud: int, fs: int) -> int:
@@ -65,6 +74,7 @@ class PskModulator:
         self.nrzi = NrziEncoder()
         self.fx25 = 0
         self.il2p: bool | None = None
+        self.il2p_crc: bool = False                 # append IL2Pc trailing CRC when True
         self.phase = math.radians(45.0)            # Direwolf starts at 45 deg ("to mimic first attempt")
         self.carrier_phase = 0.0
         self._t = 0                                 # output samples so far (symbol timing)
@@ -98,7 +108,7 @@ class PskModulator:
         n = end - self._t
         idx = ((self._t + np.arange(n)) * p.baud // self.fs) - self._sym
         idx = np.clip(idx, 0, n_sym - 1)
-        w = 2 * math.pi * CARRIER / self.fs
+        w = 2 * math.pi * p.carrier / self.fs
         carrier = self.carrier_phase + w * np.arange(n)
         self.carrier_phase = float((self.carrier_phase + w * n) % (2 * math.pi))
         self._t, self._sym = end, self._sym + n_sym
@@ -106,7 +116,8 @@ class PskModulator:
 
     def modulate(self, frames: list[bytes], txdelay: float = 0.3, txtail: float = 0.03) -> np.ndarray:
         if self.il2p is not None:
-            line = il2p_burst_levels(frames, self.flags_for(txdelay), self.flags_for(txtail), self.il2p)
+            line = il2p_burst_levels(frames, self.flags_for(txdelay), self.flags_for(txtail), self.il2p,
+                                     crc=self.il2p_crc)
             line += [0] * (-len(line + self._pend) % self.p.bits)
             return self.modulate_levels(line)
         bits = fx25_burst_bits(frames, self.flags_for(txdelay), self.flags_for(txtail), self.fx25)
@@ -124,7 +135,8 @@ class PskDemodulator:
     ACQ_SYMBOLS = 96                    # coarse timing span (48 was noisy at the bad end of Direwolf's noise ramp)
     DCD_THRESHOLD = 0.4
 
-    def __init__(self, profile: PskProfile = QPSK, fs: int = 8000, energy_dcd_dbfs: float | None = -45.0) -> None:
+    def __init__(self, profile: PskProfile = QPSK, fs: int = 8000, energy_dcd_dbfs: float | None = -45.0,
+                 il2p_crc: bool = False) -> None:
         self.p, self.fs = profile, fs
         self.sps = _sps(profile.baud, fs)
         self.internal = profile.baud * self.sps
@@ -135,7 +147,7 @@ class PskDemodulator:
         # and mix-then-integrate (2fc residue) front ends left a ~1e-3 error floor on clean 8PSK. Projecting onto
         # cos and sin and correcting by their 2x2 Gram matrix over the exact window is ISI-free at the right
         # strobe. Running sums of x*cos, x*sin, cos^2, sin^2, cos*sin let every strobe be evaluated vectorised.
-        self._w = 2 * math.pi * CARRIER / self.internal
+        self._w = 2 * math.pi * profile.carrier / self.internal
         self._acc = np.zeros(5)                                   # running totals at the end of the buffer
         self._n = 0
         self.buf = np.zeros((5, 1))                               # cumulative sums, one column per internal sample
@@ -154,7 +166,7 @@ class PskDemodulator:
         self.nrzi = NrziDecoder()
         self.hdlc = HdlcDecoder()
         self.fx25 = Fx25Receiver()
-        self.il2p = Il2pReceiver()
+        self.il2p = Il2pReceiver(crc_mode=il2p_crc)
         self._recent: dict[bytes, tuple[int, int]] = {}
         self._bits_seen = 0
         self.frames = 0

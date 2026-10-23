@@ -54,5 +54,53 @@ class PskTest(unittest.TestCase):
         self.check("psk2400", lambda a, r: a, 8, fs=48000)
 
 
+class NinoTncPskTest(unittest.TestCase):
+    """Round-trip tests for NinoTNC's BPSK/QPSK modes (IL2Pc framing)."""
+
+    def _roundtrip(self, name, fs=8000, n=4, txdelay=0.5):
+        fs_ = [Frame.ui("N0CALL", "APRS", f">nino {i} " + "y" * 30).encode() for i in range(n)]
+        mod, dem = make(name, fs)
+        audio = np.concatenate([
+            np.concatenate((mod.modulate([f], txdelay=txdelay), np.zeros(int(fs * 0.1), np.int16)))
+            for f in fs_
+        ])
+        got = []
+        for i in range(0, len(audio), 160):
+            got += dem.feed(audio[i:i + 160])
+        return fs_, got
+
+    def test_ninobpsk300_roundtrip(self):
+        fs_, got = self._roundtrip("ninobpsk300", txdelay=0.5)
+        self.assertEqual(got, fs_)
+
+    def test_ninobpsk1200_roundtrip(self):
+        fs_, got = self._roundtrip("ninobpsk1200")
+        self.assertEqual(got, fs_)
+
+    def test_ninopsk600_roundtrip(self):
+        fs_, got = self._roundtrip("ninopsk600", txdelay=0.5)
+        self.assertEqual(got, fs_)
+
+    def test_ninopsk3600_roundtrip(self):
+        fs_, got = self._roundtrip("ninopsk3600")
+        self.assertEqual(got, fs_)
+
+    def test_ninotnc_crc_mode_rejects_plain_il2p(self):
+        """A NinoTNC demodulator (crc_mode=True) drops frames encoded without CRC."""
+        f = Frame.ui("N0CALL", "APRS", ">no crc").encode()
+        # Build plain IL2P audio on 1500 Hz carrier BPSK 300
+        from hammodem.modems.psk import PskModulator, NINO_BPSK300
+        mod = PskModulator(NINO_BPSK300, 8000)
+        mod.il2p = True            # plain IL2P, no CRC
+        mod.il2p_crc = False
+        audio = mod.modulate([f], txdelay=0.5)
+        from hammodem.modems.psk import PskDemodulator
+        dem = PskDemodulator(NINO_BPSK300, 8000, il2p_crc=True)
+        got = []
+        for i in range(0, len(audio), 160):
+            got += dem.feed(audio[i:i + 160])
+        self.assertEqual(got, [])
+
+
 if __name__ == "__main__":
     unittest.main()

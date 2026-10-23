@@ -14,9 +14,12 @@ scrambler -- raw bits drive the line level, MSB first:
 * The payload is split into blocks of at most 239 (max-FEC, 16 parity each) or 247 bytes (2/4/6/8 parity by
   block size); larger blocks first.
 * Receivers accept the sync word with one bit error, in either polarity.
+* IL2Pc (``crc=True``): appends/checks 4 Hamming-encoded bytes of CRC-16-CCITT over the AX.25 payload
+  (without FCS) immediately after the last payload block.  NinoTNC firmware uses this for all PSK modes.
 
-Format details follow Direwolf 1.7's il2p_*.c (read for interoperability; this is an independent
-implementation). Not implemented: modulo-128 frames in type 1 (they go as type 0) and the later IL2P CRC.
+Format details follow Direwolf 1.7's il2p_*.c and the IL2P Specification Draft v0.6 (KK4HEJ, March 2024)
+for interoperability; this is an independent implementation.
+Not implemented: modulo-128 frames in type 1 (they go as type 0).
 """
 
 from __future__ import annotations
@@ -30,6 +33,49 @@ PREAMBLE = 0x55
 SYNC = 0xF15E48
 HEADER_SIZE, HEADER_PARITY = 13, 2
 MAX_PAYLOAD = 1023
+
+# IL2Pc CRC (IL2P Specification Draft v0.6, §"Optional Trailing CRC with Hamming Encoding")
+_HAMMING_ENC = (0x00, 0x71, 0x62, 0x13, 0x54, 0x25, 0x36, 0x47,
+                0x38, 0x49, 0x5a, 0x2b, 0x6c, 0x1d, 0x0e, 0x7f)
+_HAMMING_DEC = (0x0, 0x0, 0x0, 0x3, 0x0, 0x5, 0xe, 0x7,
+                0x0, 0x9, 0xe, 0xb, 0xe, 0xd, 0xe, 0xe,
+                0x0, 0x3, 0x3, 0x3, 0x4, 0xd, 0x6, 0x3,
+                0x8, 0xd, 0xa, 0x3, 0xd, 0xd, 0xe, 0xd,
+                0x0, 0x5, 0x2, 0xb, 0x5, 0x5, 0x6, 0x5,
+                0x8, 0xb, 0xb, 0xb, 0xc, 0x5, 0xe, 0xb,
+                0x8, 0x1, 0x6, 0x3, 0x6, 0x5, 0x6, 0x6,
+                0x8, 0x8, 0x8, 0xb, 0x8, 0xd, 0x6, 0xf,
+                0x0, 0x9, 0x2, 0x7, 0x4, 0x7, 0x7, 0x7,
+                0x9, 0x9, 0xa, 0x9, 0xc, 0x9, 0xe, 0x7,
+                0x4, 0x1, 0xa, 0x3, 0x4, 0x4, 0x4, 0x7,
+                0xa, 0x9, 0xa, 0xa, 0x4, 0xd, 0xa, 0xf,
+                0x2, 0x1, 0x2, 0x2, 0xc, 0x5, 0x2, 0x7,
+                0xc, 0x9, 0x2, 0xb, 0xc, 0xc, 0xc, 0xf,
+                0x1, 0x1, 0x2, 0x1, 0x4, 0x1, 0x6, 0xf,
+                0x8, 0x1, 0xa, 0xf, 0xc, 0xf, 0xf, 0xf)
+
+
+def _crc16_ccitt(data: bytes) -> int:
+    crc = 0xFFFF
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0x8408 if crc & 1 else crc >> 1
+    return crc ^ 0xFFFF
+
+
+def encode_crc(raw_no_fcs: bytes) -> bytes:
+    """Four Hamming-encoded bytes for the IL2Pc CRC (CRC-16-CCITT over AX.25 data without FCS)."""
+    crc = _crc16_ccitt(raw_no_fcs)
+    return bytes(_HAMMING_ENC[(crc >> (12 - 4 * i)) & 0xF] for i in range(4))
+
+
+def verify_crc(raw_no_fcs: bytes, crc_bytes: bytes) -> bool:
+    """True if the 4 Hamming-encoded CRC bytes match the frame."""
+    expected = _crc16_ccitt(raw_no_fcs)
+    nibbles = [_HAMMING_DEC[b & 0x7F] for b in crc_bytes]
+    got = (nibbles[0] << 12) | (nibbles[1] << 8) | (nibbles[2] << 4) | nibbles[3]
+    return got == expected
 
 _RS: dict[int, ReedSolomon] = {}
 
@@ -196,8 +242,8 @@ def payload_blocks(size: int, max_fec: bool) -> tuple[list[int], int] | None:
     return [small + 1] * large_n + [small] * (count - large_n), parity
 
 
-def encode_frame(raw: bytes, max_fec: bool = True) -> bytes:
-    """Sync word + header + payload for one AX.25 frame (without FCS)."""
+def encode_frame(raw: bytes, max_fec: bool = True, crc: bool = False) -> bytes:
+    """Sync word + header + payload for one AX.25 frame (without FCS), optionally with IL2Pc CRC."""
     f = Frame.decode(raw)
     t1 = _type1_header(f, max_fec)
     if t1 is not None:
@@ -217,6 +263,8 @@ def encode_frame(raw: bytes, max_fec: bool = True) -> bytes:
         sb = scramble_block(payload[pos:pos + size])
         out += sb + _rs(parity).encode(sb)
         pos += size
+    if crc:
+        out += encode_crc(raw[:-2])         # CRC over AX.25 data without 2-byte FCS
     return out
 
 
@@ -225,11 +273,11 @@ def _bits_msb(data: bytes) -> list[int]:
 
 
 def burst_levels(frames: list[bytes], preamble_bytes: int, postamble_bytes: int = 1, max_fec: bool = True,
-                 invert: bool = False) -> list[int]:
+                 invert: bool = False, crc: bool = False) -> list[int]:
     """Line levels (no NRZI) for one transmission of IL2P frames."""
     data = bytes((PREAMBLE,)) * max(1, preamble_bytes)
     for raw in frames:
-        data += encode_frame(raw, max_fec)
+        data += encode_frame(raw, max_fec, crc)
     data += bytes((PREAMBLE,)) * max(1, postamble_bytes)
     bits = _bits_msb(data)
     return [b ^ 1 for b in bits] if invert else bits
@@ -248,7 +296,7 @@ class Il2pReceiver:
 
     BATCH = 256
 
-    def __init__(self) -> None:
+    def __init__(self, crc_mode: bool = False) -> None:
         self.pend = np.zeros(0, np.uint8)       # bits not yet consumed
         self.pend_era = np.zeros(0, bool)        # erasure flags parallel to pend
         self.state = "search"
@@ -261,6 +309,8 @@ class Il2pReceiver:
         self.frames = 0
         self.corrected = 0
         self.erasures = 0                        # bytes passed to RS as erased (across all frames)
+        self.crc_mode = crc_mode                 # IL2Pc: expect 4 Hamming-encoded CRC bytes after payload
+        self._pending_frame: bytes | None = None
 
     def feed_bits(self, bits, erased=None) -> list[bytes]:
         """Feed raw line levels; ``erased`` is an optional per-bit erasure mask."""
@@ -298,17 +348,31 @@ class Il2pReceiver:
             data = chunk.tobytes()
             self.pend = self.pend[nbits:]
             self.pend_era = self.pend_era[nbits:]
+            if self.state == "crc":
+                if self._pending_frame is not None and verify_crc(self._pending_frame[:-2], data):
+                    out.append(self._pending_frame)
+                self._pending_frame = None
+                self.state = "search"
+                continue
             if self.state == "header":
                 if not self._header(data, era_chunk):
                     self.state = "search"
                 elif self.need == 0:
                     frame = self._finish(b"", np.zeros(0, bool))
                     if frame is not None:
-                        out.append(frame)
+                        self._deliver(out, frame)
                 continue
             frame = self._finish(data, era_chunk)
             if frame is not None:
-                out.append(frame)
+                self._deliver(out, frame)
+
+    def _deliver(self, out: list, frame: bytes) -> None:
+        if self.crc_mode:
+            self._pending_frame = frame
+            self.state = "crc"
+            self.need = 4
+        else:
+            out.append(frame)
 
     def _header(self, data: bytes, era_bits: np.ndarray) -> bool:
         era = self._byte_erasures(era_bits, len(data))

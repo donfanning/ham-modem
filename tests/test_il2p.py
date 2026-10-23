@@ -94,5 +94,51 @@ class Il2pTest(unittest.TestCase):
         self.assertGreater(r.erasures, 0)
 
 
+class Il2pcCrcTest(unittest.TestCase):
+    def test_spec_example_crc_bytes(self):
+        """CRC of the IL2P spec v0.6 S-frame example must match the published bytes 7F 00 1D 2B."""
+        raw_no_fcs = bytes.fromhex("96826488 8AAE E496 9668 908A 946F 81".replace(" ", ""))
+        crc = il2p.encode_crc(raw_no_fcs)
+        self.assertEqual(list(crc), [0x7F, 0x00, 0x1D, 0x2B])
+
+    def test_verify_crc_accepts_correct_bytes(self):
+        raw_no_fcs = bytes.fromhex("96826488 8AAE E496 9668 908A 946F 81".replace(" ", ""))
+        self.assertTrue(il2p.verify_crc(raw_no_fcs, bytes([0x7F, 0x00, 0x1D, 0x2B])))
+
+    def test_verify_crc_rejects_wrong_bytes(self):
+        raw_no_fcs = bytes.fromhex("96826488 8AAE E496 9668 908A 946F 81".replace(" ", ""))
+        # bytes([0x00]*4) decodes to CRC 0x0000, which ≠ 0xF0DB
+        self.assertFalse(il2p.verify_crc(raw_no_fcs, bytes(4)))
+
+    def test_il2pc_roundtrip_frames(self):
+        """Frames encoded with crc=True decode via Il2pReceiver(crc_mode=True)."""
+        fs = frames()
+        bits = il2p.burst_levels(fs, 4, crc=True)
+        r = il2p.Il2pReceiver(crc_mode=True)
+        got = r.feed_bits(bits + [0, 1] * 8)
+        self.assertEqual(got, fs)
+
+    def test_il2pc_bad_crc_rejected(self):
+        """A frame with a corrupted CRC trailer is silently dropped."""
+        f = Frame.ui("N0CALL", "APRS", ">test crc rejection").encode()
+        encoded = il2p.encode_frame(f, crc=True)
+        # Flip all 4 CRC bytes so every nibble is wrong.
+        bad = bytearray(encoded)
+        for i in range(1, 5):
+            bad[-i] ^= 0x55
+        bits = il2p._bits_msb(bytes([il2p.PREAMBLE] * 4) + bytes(bad) + bytes([il2p.PREAMBLE]))
+        r = il2p.Il2pReceiver(crc_mode=True)
+        got = r.feed_bits(bits + [0, 1] * 8)
+        self.assertEqual(got, [])
+
+    def test_plain_il2p_unaffected_by_crc_flag(self):
+        """Frames encoded without CRC still decode via crc_mode=False receiver."""
+        fs = frames()  # uses all 6; the SABM frame has no payload and needs later frames' bits to flush search
+        bits = il2p.burst_levels(fs, 4, crc=False)
+        r = il2p.Il2pReceiver(crc_mode=False)
+        got = r.feed_bits(bits + [0, 1] * 8)
+        self.assertEqual(got, fs)
+
+
 if __name__ == "__main__":
     unittest.main()
