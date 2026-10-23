@@ -120,7 +120,8 @@ class Runtime:
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="ham-modem", description="AX.25 packet TNC over VoIP audio")
-    ap.add_argument("--modem", choices=(*MODEMS, "ardop", "amtor", "pactor", "rtty", "psk31", "psk63", "mfsk16"), default="afsk1200",
+    ap.add_argument("--modem", choices=(*MODEMS, "ardop", "amtor", "pactor", "rtty", "psk31", "psk63", "mfsk16",
+                                       "olivia", "contestia"), default="afsk1200",
                     help="'ardop': an ARDOP (Winlink) TNC with an ardopcf-compatible host interface instead of AX.25")
     ap.add_argument("--rate", type=int, help="audio sample rate (default: 8000 for AFSK, 16000 for g3ruh9600, "
                                              "48000 for g3ruh19200/38400)")
@@ -232,7 +233,7 @@ def main(argv: list[str] | None = None) -> None:
         station = ArqStation(args.mycall, fs=args.rate, bandwidth=args.arqbw.upper(), drive=args.drive / 100)
         run_ardop(station, audio, *_hostport(args.ardop_host))
         return
-    if args.modem in ("amtor", "pactor", "rtty", "psk31", "psk63", "mfsk16"):
+    if args.modem in ("amtor", "pactor", "rtty", "psk31", "psk63", "mfsk16", "olivia", "contestia"):
         ports = [_pty(p) for p in args.text_pty]
         if args.text_tcp:
             ports.append(TcpSerial(*_hostport(args.text_tcp)))
@@ -264,6 +265,17 @@ def main(argv: list[str] | None = None) -> None:
                  args.kb_center, audio.name, ", ".join(p.name for p in ports))
         run_kb(KeyboardTnc("mfsk16", MfskModulator(**kw), MfskDemodulator(**kw), args.rate,
                            lead=5.0, tail=5.0), audio, ports)
+        return
+    if args.modem in ("olivia", "contestia"):
+        from .keyboard.olivia import OliviaDemodulator, OliviaModulator  # noqa: PLC0415
+        from .keyboard.tnc import KeyboardTnc, run as run_kb  # noqa: PLC0415
+        is_contestia = args.modem == "contestia"
+        kw = dict(fs=args.rate, center=args.kb_center, contestia=is_contestia)
+        log.info("%s 32/1000 at %.2f baud, %d Hz centre; audio %s; text on %s",
+                 args.modem.upper(), OliviaModulator(**kw).baud,
+                 args.kb_center, audio.name, ", ".join(p.name for p in ports))
+        run_kb(KeyboardTnc(args.modem, OliviaModulator(**kw), OliviaDemodulator(**kw), args.rate,
+                           lead=4.0, tail=4.0), audio, ports)
         return
     if args.modem == "pactor":
         from .pactor.tnc import PactorTnc, run as run_pactor  # noqa: PLC0415
