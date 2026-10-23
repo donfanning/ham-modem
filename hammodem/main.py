@@ -121,7 +121,7 @@ class Runtime:
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="ham-modem", description="AX.25 packet TNC over VoIP audio")
     ap.add_argument("--modem", choices=(*MODEMS, "ardop", "amtor", "pactor", "rtty", "psk31", "psk63", "mfsk16",
-                                       "olivia", "contestia"), default="afsk1200",
+                                       "olivia", "contestia", "dominoex", "thor"), default="afsk1200",
                     help="'ardop': an ARDOP (Winlink) TNC with an ardopcf-compatible host interface instead of AX.25")
     ap.add_argument("--rate", type=int, help="audio sample rate (default: 8000 for AFSK, 16000 for g3ruh9600, "
                                              "48000 for g3ruh19200/38400)")
@@ -233,7 +233,8 @@ def main(argv: list[str] | None = None) -> None:
         station = ArqStation(args.mycall, fs=args.rate, bandwidth=args.arqbw.upper(), drive=args.drive / 100)
         run_ardop(station, audio, *_hostport(args.ardop_host))
         return
-    if args.modem in ("amtor", "pactor", "rtty", "psk31", "psk63", "mfsk16", "olivia", "contestia"):
+    if args.modem in ("amtor", "pactor", "rtty", "psk31", "psk63", "mfsk16", "olivia", "contestia",
+                      "dominoex", "thor"):
         ports = [_pty(p) for p in args.text_pty]
         if args.text_tcp:
             ports.append(TcpSerial(*_hostport(args.text_tcp)))
@@ -275,6 +276,18 @@ def main(argv: list[str] | None = None) -> None:
                  args.modem.upper(), OliviaModulator(**kw).baud,
                  args.kb_center, audio.name, ", ".join(p.name for p in ports))
         run_kb(KeyboardTnc(args.modem, OliviaModulator(**kw), OliviaDemodulator(**kw), args.rate,
+                           lead=4.0, tail=4.0), audio, ports)
+        return
+    if args.modem in ("dominoex", "thor"):
+        from .keyboard.dominoex import DominoDemodulator, DominoModulator  # noqa: PLC0415
+        from .keyboard.tnc import KeyboardTnc, run as run_kb  # noqa: PLC0415
+        is_thor = args.modem == "thor"
+        kw = dict(fs=args.rate, symlen=1024, doublespaced=2, center=args.kb_center, thor=is_thor, idepth=10)
+        baud = args.rate / 1024
+        mode_name = "Thor 8" if is_thor else "DominoEX 8"
+        log.info("%s at %.2f baud, %d Hz centre; audio %s; text on %s",
+                 mode_name, baud, args.kb_center, audio.name, ", ".join(p.name for p in ports))
+        run_kb(KeyboardTnc(args.modem, DominoModulator(**kw), DominoDemodulator(**kw), args.rate,
                            lead=4.0, tail=4.0), audio, ports)
         return
     if args.modem == "pactor":
