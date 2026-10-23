@@ -293,7 +293,7 @@ class Receiver:
             qual.append(float(np.mean(resid)))
             syms = idx & (3 if info.mod == "4PSK" else 7)
             if info.mod == "16QAM":
-                full = abs(z[0])                                       # reference symbol: full amplitude
+                full = abs(z[0])
                 half = np.abs(z[1:]) < 0.75 * full
                 syms = syms | (half.astype(np.int64) << 3)
             value = 0

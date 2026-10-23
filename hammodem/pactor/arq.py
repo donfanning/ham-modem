@@ -43,7 +43,15 @@ _CS_MAP = {code.CS1: 1, code.CS2: 2, code.CS3: 3, code.CS4: 4}
 
 
 class MemoryArq:
-    """Accumulate soft discriminator values across retransmissions of the same packet."""
+    """Accumulate soft discriminator values across retransmissions of the same packet.
+
+    When the hard decision fails CRC, ``selective_fec`` tries flipping the weakest
+    bits (up to ``max_flip`` at a time, up to ``max_trials`` combinations) — a
+    brute-force soft-decision FEC using the CRC as the error detector.
+    """
+
+    MAX_FLIP = 3
+    MAX_TRIALS = 120
 
     def __init__(self, nbits: int) -> None:
         self.acc = np.zeros(nbits, float)
@@ -57,9 +65,55 @@ class MemoryArq:
     def decide(self) -> list[int]:
         return [1 if v > 0 else 0 for v in self.acc]
 
+    def selective_fec(self, pkt_bytes: int) -> bytes | None:
+        """Try hard decision, then flip weakest bits until CRC passes or budget exhausted."""
+        nbits = pkt_bytes * 8
+        if len(self.acc) < nbits:
+            return None
+        bits = self.decide()[:nbits]
+        raw = self._bits_to_bytes(bits, pkt_bytes)
+        if code.crc_check(raw):
+            return raw
+        confidence = np.abs(self.acc[:nbits])
+        weak = np.argsort(confidence)
+        trials = 0
+        for nf in range(1, min(self.MAX_FLIP, len(weak)) + 1):
+            for combo in _combinations(weak, nf, self.MAX_TRIALS - trials):
+                trials += 1
+                trial_bits = bits[:]
+                for idx in combo:
+                    trial_bits[idx] ^= 1
+                raw = self._bits_to_bytes(trial_bits, pkt_bytes)
+                if code.crc_check(raw):
+                    return raw
+                if trials >= self.MAX_TRIALS:
+                    return None
+        return None
+
+    @staticmethod
+    def _bits_to_bytes(bits: list[int], nbytes: int) -> bytes:
+        raw = bytearray(nbytes)
+        for byte_i in range(nbytes):
+            val = 0
+            for bit_i in range(8):
+                val |= bits[byte_i * 8 + bit_i] << bit_i
+            raw[byte_i] = val
+        return bytes(raw)
+
     def reset(self) -> None:
         self.acc[:] = 0
         self.count = 0
+
+
+def _combinations(indices: np.ndarray, n: int, max_count: int):
+    """Yield up to ``max_count`` n-element combinations from ``indices``."""
+    from itertools import combinations as _comb
+    count = 0
+    for c in _comb(indices[:min(len(indices), n + 12)], n):
+        yield c
+        count += 1
+        if count >= max_count:
+            return
 
 
 class PactorStation:
@@ -437,18 +491,12 @@ class PactorStation:
         if pkt is None:
             self._marq.add(soft) if soft else None
             self.stats["pkts_bad"] += 1
-            # try memory ARQ
+            # try memory ARQ with selective FEC (flip weakest bits if CRC fails)
             if self._marq.count >= 2:
-                marq_bits = self._marq.decide()
                 pkt_bytes = PKT_200 if self.baud == 200 else PKT_100
-                if len(marq_bits) >= pkt_bytes * 8:
-                    raw = bytearray()
-                    for byte_i in range(pkt_bytes):
-                        val = 0
-                        for bit_i in range(8):
-                            val |= marq_bits[byte_i * 8 + bit_i] << bit_i
-                        raw.append(val)
-                    pkt = code.parse_packet(bytes(raw))
+                raw = self._marq.selective_fec(pkt_bytes)
+                if raw is not None:
+                    pkt = code.parse_packet(raw)
                     if pkt is not None:
                         pkt["baud"] = self.baud
                         pkt["header"] = 0

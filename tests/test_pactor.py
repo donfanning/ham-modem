@@ -277,6 +277,49 @@ class TestNoiseRobustness(unittest.TestCase):
         self.assertEqual(parsed["data"], data)
 
 
+class TestSelectiveFec(unittest.TestCase):
+    def test_flip_weakest_recovers(self):
+        """Selective FEC: flipping 1-2 weak bits recovers a packet that hard decision can't."""
+        data = b"SELECTIVE FEC TEST!!"[:20]
+        pkt = code.build_packet(data, counter=1)
+        pkt_bits = []
+        for byte in pkt:
+            for i in range(8):
+                pkt_bits.append((byte >> i) & 1)
+        soft = [2.0 if b else -2.0 for b in pkt_bits]
+        soft[10] = 0.05   # barely wrong polarity — weakest bit
+        soft[42] = -0.03  # another weak bit
+        marq = MemoryArq(len(pkt_bits))
+        marq.add(soft)
+        marq.count = 2
+        hard_bits = marq.decide()
+        raw_hard = marq._bits_to_bytes(hard_bits, len(pkt))
+        self.assertIsNone(code.parse_packet(raw_hard), "hard decision should fail with flipped bits")
+        raw_fec = marq.selective_fec(len(pkt))
+        self.assertIsNotNone(raw_fec, "selective FEC should recover the packet")
+        parsed = code.parse_packet(raw_fec)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["data"], data)
+
+    def test_no_errors_passes_directly(self):
+        """Selective FEC passes clean packets without flipping."""
+        data = b"CLEAN DATA!!"[:20]
+        pkt = code.build_packet(data, counter=0)
+        pkt_bits = []
+        for byte in pkt:
+            for i in range(8):
+                pkt_bits.append((byte >> i) & 1)
+        soft = [5.0 if b else -5.0 for b in pkt_bits]
+        marq = MemoryArq(len(pkt_bits))
+        marq.add(soft)
+        marq.count = 2
+        raw = marq.selective_fec(len(pkt))
+        self.assertIsNotNone(raw)
+        parsed = code.parse_packet(raw)
+        self.assertIsNotNone(parsed)
+        self.assertEqual(parsed["data"], data)
+
+
 class TestHuffmanInPacket(unittest.TestCase):
     def test_huffman_packet(self):
         """Build a packet with Huffman-compressed text and verify the text survives."""
