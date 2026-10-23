@@ -174,7 +174,8 @@ Phases are ordered by value. The first is a prerequisite for every HF protocol a
     Walsh/Hadamard FEC, 32 tones 1000 Hz BW, 31.25 baud, Gray-coded MFSK, diagonal interleaver+scrambler, 9 tests;
     Thor/DominoEX done 2026-10-22: `--modem dominoex`/`--modem thor`, 18-tone IFK+ at 7.8125 baud (DomEX8/Thor8),
     nibble-based varicode (DominoEX) and MFSK varicode + R=1/2 K=7 FEC + diagonal interleaver (Thor), 9 tests;
-    still open: JS8)*
+    JS8 done 2026-10-22: `--modem js8`, 8-FSK (174,87) LDPC with CRC-12, Costas sync, BP decoder,
+    6.25 baud Normal mode at 8 kHz, 13 tests including -5 dB noisy channel)*
 15. **Reverse-engineered proprietary HF modes** (research). Method and constraints are below. Order:
     1. **PACTOR-II/III**: highest demand (Winlink, maritime); SCS has published protocol descriptions for III, and the II waveform is reasonably documented.
     2. **Clover-II/2000 (HAL)**: the waveform is well described in Ray Petit's DCC papers (pulsed four-tone, adaptive BPSK up to 16-level, Reed-Solomon) and the patents have expired. The ARQ handshake needs recordings of real links. Mostly historical value.
