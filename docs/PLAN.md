@@ -179,7 +179,8 @@ Phases are ordered by value. The first is a prerequisite for every HF protocol a
     data + 3×16 ref), 32-row convolutional interleaver with (i×9) mod 32 commutator, STANAG-specific SOM
     (0x03873C3C), shared FEC/Viterbi/RRC/scrambler from MIL-STD, 2400 bps coded (rate-1/2 + interleaver) and
     3600 bps uncoded, 25 tests including clean/noisy round-trips and two-terminal;
-    still open: STANAG 5066 data-link layer, lower rates (75-1200 bps))*
+    lower rates (75-1200 bps) verified for both MIL-STD and STANAG with round-trip tests 2026-10-23;
+    still open: STANAG 5066 data-link layer)*
 14. **Keyboard / messaging modes** (medium each, lower TNC value): RTTY (Baudot), PSK31/63, MFSK16, Olivia/Contestia, Thor/DominoEX, and JS8. Interop targets: fldigi and JS8Call.
     *(RTTY done; PSK31/63 done; MFSK16 done; Olivia/Contestia done 2026-10-22: `--modem olivia`/`--modem contestia`,
     Walsh/Hadamard FEC, 32 tones 1000 Hz BW, 31.25 baud, Gray-coded MFSK, diagonal interleaver+scrambler, 9 tests;

@@ -206,5 +206,29 @@ class InternalSampleRateTest(unittest.TestCase):
         self.assertEqual(recovered, msg)
 
 
+class LowerRatesTest(unittest.TestCase):
+    def _roundtrip(self, rate, msg=b"Test"):
+        mod = Stanag4285Modulator(fs=8000, rate=rate, interleave="short")
+        demod = Stanag4285Demodulator(fs=8000, rate=rate, interleave="short")
+        audio = mod.transmit(msg)
+        recovered = demod.feed(audio)
+        self.assertEqual(recovered, msg, f"{rate} bps round-trip failed")
+
+    def test_1200_short(self):
+        self._roundtrip(1200, b"1200")
+
+    def test_600_short(self):
+        self._roundtrip(600, b"600")
+
+    def test_300_short(self):
+        self._roundtrip(300, b"300")
+
+    def test_150_short(self):
+        self._roundtrip(150, b"150")
+
+    def test_75_short(self):
+        self._roundtrip(75, b"75")
+
+
 if __name__ == "__main__":
     unittest.main()

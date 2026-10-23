@@ -183,5 +183,31 @@ class TestTwoTerminal(unittest.TestCase):
             self.assertEqual(recovered[:len(msg_a)], msg_a)
 
 
+class TestLowerRates(unittest.TestCase):
+    def _roundtrip(self, rate, interleave="short", msg=b"Test"):
+        mod = MilStdModulator(fs=8000, rate=rate, interleave=interleave)
+        audio = mod.transmit(msg)
+        demod = MilStdDemodulator(fs=8000, rate=rate, interleave=interleave)
+        recovered = demod.feed(audio)
+        self.assertTrue(len(recovered) >= len(msg),
+                        f"{rate} bps {interleave}: recovered {len(recovered)} bytes, need {len(msg)}")
+        self.assertEqual(recovered[:len(msg)], msg)
+
+    def test_4800_uncoded(self):
+        self._roundtrip(4800, "zero", b"HI")
+
+    def test_1200_short(self):
+        self._roundtrip(1200, "short", b"1200")
+
+    def test_600_short(self):
+        self._roundtrip(600, "short", b"600")
+
+    def test_300_short(self):
+        self._roundtrip(300, "short", b"300")
+
+    def test_150_short(self):
+        self._roundtrip(150, "short", b"150")
+
+
 if __name__ == "__main__":
     unittest.main()
