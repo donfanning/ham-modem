@@ -338,6 +338,7 @@ class ArqStation:
         self.timeout_triggered, self.timeout_send_at = False, 0.0
         self._timeout_trip = self.now
         self._mem_type, self._mem_blocks = -1, []
+        self._mem_soft: list = []
 
     # ================================================================== timers (ardopcf CheckTimers)
 
@@ -372,7 +373,7 @@ class ArqStation:
     def _fec_receive(self, t: int, d: Decoded, ok: bool, data: bytes) -> None:
         """ardopcf ProcessRcvdFECDataFrame: good frames go up as FEC (repeats dropped), the last bad one as ERR."""
         if ok:
-            self._mem_type, self._mem_blocks = -1, []
+            self._mem_type, self._mem_blocks, self._mem_soft = -1, [], []
             key = (t, codec.crc16(data))
             if key == self._fec_last_ok:
                 return
@@ -628,12 +629,45 @@ class ArqStation:
         self._process(t, d, ok, data)
 
     def _memory_arq(self, d: Decoded) -> tuple[bool, bytes]:
+        from .demod import Receiver  # noqa: PLC0415
         blocks = d.extra.get("blocks") or []
-        if d.frame_type != self._mem_type or len(self._mem_blocks) != len(blocks):
-            self._mem_type, self._mem_blocks = d.frame_type, list(blocks)
+        info = codec.FRAMES.get(d.frame_type)
+        is_psk = "soft_psk" in d.extra
+        is_fsk = "soft_fsk" in d.extra
+        nblocks = len(blocks)
+        if d.frame_type != self._mem_type or len(self._mem_blocks) != nblocks:
+            self._mem_type = d.frame_type
+            self._mem_blocks = list(blocks)
+            if is_psk:
+                self._mem_soft = [e.copy() for e in d.extra["soft_psk"]]
+            elif is_fsk:
+                self._mem_soft = [e.copy() for e in d.extra["soft_fsk"]]
+            else:
+                self._mem_soft = []
         else:
-            self._mem_blocks = [a if a is not None else b for a, b in zip(self._mem_blocks, blocks)]
-        if blocks and all(b is not None for b in self._mem_blocks):
+            for i in range(nblocks):
+                if self._mem_blocks[i] is not None:
+                    continue
+                if blocks[i] is not None:
+                    self._mem_blocks[i] = blocks[i]
+                    continue
+                if is_psk and i < len(d.extra["soft_psk"]) and i < len(self._mem_soft):
+                    self._mem_soft[i]["d"] = self._mem_soft[i]["d"] + d.extra["soft_psk"][i]["d"]
+                    self._mem_soft[i]["ref_amp"] = max(self._mem_soft[i]["ref_amp"],
+                                                       d.extra["soft_psk"][i]["ref_amp"])
+                    if info is not None:
+                        ok, blk, _ = Receiver.soft_redecode_psk(
+                            self._mem_soft[i]["d"], self._mem_soft[i]["ref_amp"], info, d.frame_type)
+                        if ok:
+                            self._mem_blocks[i] = blk
+                elif is_fsk and i < len(d.extra["soft_fsk"]) and i < len(self._mem_soft):
+                    self._mem_soft[i] = self._mem_soft[i] + d.extra["soft_fsk"][i]
+                    if info is not None:
+                        ok, blk, _ = Receiver.soft_redecode_fsk(
+                            self._mem_soft[i], info, d.frame_type)
+                        if ok:
+                            self._mem_blocks[i] = blk
+        if nblocks > 0 and all(b is not None for b in self._mem_blocks):
             return True, b"".join(self._mem_blocks)
         return d.ok, d.data or b""
 
@@ -902,7 +936,7 @@ class ArqStation:
         self._set_state("IRS")
         self.sub = "IRSfromISS"
         self.last_to_host = -1
-        self._mem_type, self._mem_blocks = -1, []
+        self._mem_type, self._mem_blocks, self._mem_soft = -1, [], []
 
     def _last_quality(self, d: Decoded) -> int:
         return int(d.extra.get("quality", 80))

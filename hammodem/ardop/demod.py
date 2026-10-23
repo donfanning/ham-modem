@@ -257,9 +257,12 @@ class Receiver:
         if info.data_len == 0:                                          # ACK/NAK/BREAK/IDLE/DISC/END/...
             return Decoded(t, info.name, sess, None, True, 0, pos, p, extra)
         ok, fixed_total, blocks, mags = True, 0, [], []
+        soft_fsk: list[np.ndarray] = []
         nblocks, dlen, rlen = modulate.fsk_blocks(info)
         for _ in range(nblocks):
-            raw, p = self._fsk_bytes(x, p, dlen + 3 + rlen, info.baud, mags)
+            block_mags: list = []
+            raw, p = self._fsk_bytes(x, p, dlen + 3 + rlen, info.baud, block_mags)
+            soft_fsk.append(np.array(block_mags))
             res = codec.rs_correct(raw, rlen)
             if res is None or not codec.check_crc(res[0], t):
                 ok = False
@@ -269,7 +272,8 @@ class Receiver:
             fixed_total += fixed
             blocks.append(block[1:1 + block[0]])
         extra["blocks"] = blocks
-        extra["quality"] = quality_4fsk(np.array(mags))
+        extra["soft_fsk"] = soft_fsk
+        extra["quality"] = quality_4fsk(np.array([m for bm in soft_fsk for m in bm]) if soft_fsk else np.zeros((0, 4)))
         payload = b"".join(b for b in blocks if b is not None)
         return Decoded(t, info.name, sess, payload, ok, fixed_total, pos, p, extra)
 
@@ -284,10 +288,13 @@ class Receiver:
         end = p + (nsym + 1) * 120
         seg = x[p:end].reshape(nsym + 1, 120)
         ok, fixed_total, qual, blocks = True, 0, [], []
+        soft_psk: list[dict] = []
         step = np.pi / 2 if info.mod == "4PSK" else np.pi / 4
         for f in modulate.CARRIERS[info.carriers]:
             z = (seg * env) @ np.exp(-2j * np.pi * f * k / FS)
             d = z[1:] * np.conj(z[:-1])
+            soft_entry = {"d": d.copy(), "ref_amp": abs(z[0])}
+            soft_psk.append(soft_entry)
             idx = np.round(np.angle(d) / step).astype(np.int64)
             resid = np.abs(np.angle(d * np.exp(-1j * idx * step)))
             qual.append(float(np.mean(resid)))
@@ -310,10 +317,52 @@ class Receiver:
             blocks.append(block[1:1 + block[0]])
         extra["phase_error_deg"] = round(float(np.degrees(np.mean(qual))), 1)
         extra["blocks"] = blocks
-        # ardopcf reports the quality of the last carrier only
+        extra["soft_psk"] = soft_psk
         extra["quality"] = quality_psk(resid, step, np.abs(z[1:]) if info.mod == "16QAM" else None)
         payload = b"".join(b for b in blocks if b is not None)
         return Decoded(t, info.name, sess, payload, ok, fixed_total, pos, end, extra)
+
+    @staticmethod
+    def soft_redecode_psk(combined_d: np.ndarray, ref_amp: float, info: codec.FrameInfo,
+                          t: int) -> tuple[bool, bytes | None, int]:
+        """Re-decode one carrier from accumulated differential phasors."""
+        blen = info.data_len + 3 + info.rs_len
+        bits_per = modulate.BITS[info.mod]
+        nsym = -(-blen * 8 // bits_per)
+        step = np.pi / 2 if info.mod == "4PSK" else np.pi / 4
+        idx = np.round(np.angle(combined_d) / step).astype(np.int64)
+        syms = idx & (3 if info.mod == "4PSK" else 7)
+        if info.mod == "16QAM":
+            half = np.abs(combined_d) < 0.75 * ref_amp * ref_amp
+            syms = syms | (half.astype(np.int64) << 3)
+        value = 0
+        for sym in syms[:nsym].tolist():
+            value = (value << bits_per) | sym
+        raw = (value >> (nsym * bits_per - blen * 8)).to_bytes(blen, "big")
+        res = codec.rs_correct(raw, info.rs_len)
+        if res is None or not codec.check_crc(res[0], t):
+            return False, None, 0
+        block, fixed = res
+        return True, block[1:1 + block[0]], fixed
+
+    @staticmethod
+    def soft_redecode_fsk(combined_energies: np.ndarray, info: codec.FrameInfo,
+                          t: int) -> tuple[bool, bytes | None, int]:
+        """Re-decode one FSK block from accumulated tone energies."""
+        _, dlen, rlen = modulate.fsk_blocks(info)
+        nbytes = dlen + 3 + rlen
+        raw = bytearray()
+        for i in range(nbytes):
+            v = 0
+            for j in range(4):
+                e = combined_energies[i * 4 + j]
+                v = (v << 2) | int(np.argmax(e))
+            raw.append(v)
+        res = codec.rs_correct(bytes(raw), rlen)
+        if res is None or not codec.check_crc(res[0], t):
+            return False, None, 0
+        block, fixed = res
+        return True, block[1:1 + block[0]], fixed
 
     def decode_all(self, x: np.ndarray) -> list[Decoded]:
         out, pos = [], 0

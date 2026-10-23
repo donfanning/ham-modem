@@ -112,6 +112,17 @@ class SessionTest(unittest.TestCase):
         self.assertTrue(run(a, b, 15, until=lambda: any(e.startswith("PINGACK") for e in a.events)))
         self.assertIn("PINGREPLY", b.events)
 
+    def test_summation_memory_arq_with_noise(self):
+        """Summation ARQ combines soft values from repeated frames to recover data
+        that individual transmissions can't decode."""
+        a, b = pair()
+        data = bytes(np.random.default_rng(77).integers(0, 256, 200, dtype=np.uint8))
+        a.send(data)
+        a.connect("K1ABC")
+        ok = run(a, b, 120, until=lambda: len(b.received) >= len(data), drop=0.3, seed=42)
+        self.assertTrue(ok, f"transfer incomplete: got {len(b.received)}/{len(data)} bytes")
+        self.assertEqual(bytes(b.received), data)
+
 
 if __name__ == "__main__":
     unittest.main()

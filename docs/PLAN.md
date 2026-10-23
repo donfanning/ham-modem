@@ -161,7 +161,9 @@ Phases are ordered by value. The first is a prerequisite for every HF protocol a
       mode passes 8 kHz G.711) done too; still open: better 16QAM.2000 noise margin)*.
     - 10.3 ARQ session layer (ConReq/ConAck timing, even/odd data, ACK/NAK quality, BREAK/IDLE/DISC/END, gear
       shifting) *(done 2026-10-22, [lab note](../lab/ARDOP_ARQ_2026_10_22.md): live sessions both ways with
-      ardopcf at 500 and 2000 Hz; FEC mode, BUSY detection/BUSYBLOCK and the 10-minute ID done (see 10.4); still open: summation memory ARQ, better 16QAM.2000 noise margin)*.
+      ardopcf at 500 and 2000 Hz; FEC mode, BUSY detection/BUSYBLOCK and the 10-minute ID done (see 10.4);
+      summation memory ARQ done 2026-10-23: soft combining of differential phasors (PSK) and tone energies (FSK)
+      across retransmissions, re-decoded via RS before block-level fallback; still open: better 16QAM.2000 noise margin)*.
     - 10.4 Winlink host interface (TCP 8515 commands / 8516 data) on our audio legs; test with Pat. *(done
       2026-10-22, [lab note](../lab/ARDOP_HOST_PAT_2026_10_22.md): `ham-modem --modem ardop`; Pat 1.0.0 P2P
       through ham-modem <-> ardopcf delivers messages both ways; across ConfBridge room 7300 at 8 kHz G.711 too;
