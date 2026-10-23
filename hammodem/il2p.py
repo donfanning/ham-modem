@@ -240,12 +240,17 @@ def burst_levels(frames: list[bytes], preamble_bytes: int, postamble_bytes: int 
 class Il2pReceiver:
     """IL2P receiver fed with *raw line levels* (before NRZI and descrambling), vectorised: the sync search is a
     24-bit window match over the block (<= 1 bit error, either polarity) and header/payload bytes are sliced out
-    of the bit stream once their length is known."""
+    of the bit stream once their length is known.
+
+    ``feed_bits(bits, erased=None)`` accepts an optional per-bit erasure mask (same length as ``bits``, True =
+    erased).  Erased bytes are passed to the RS decoder so errors-and-erasures decoding doubles the repair reach.
+    """
 
     BATCH = 256
 
     def __init__(self) -> None:
         self.pend = np.zeros(0, np.uint8)       # bits not yet consumed
+        self.pend_era = np.zeros(0, bool)        # erasure flags parallel to pend
         self.state = "search"
         self.polarity = 0
         self.need = 0                           # bytes wanted in header/payload state
@@ -255,9 +260,14 @@ class Il2pReceiver:
         self.max_fec = True
         self.frames = 0
         self.corrected = 0
+        self.erasures = 0                        # bytes passed to RS as erased (across all frames)
 
-    def feed_bits(self, bits) -> list[bytes]:
-        self.pend = np.concatenate((self.pend, np.asarray(bits, np.uint8)))
+    def feed_bits(self, bits, erased=None) -> list[bytes]:
+        """Feed raw line levels; ``erased`` is an optional per-bit erasure mask."""
+        bits = np.asarray(bits, np.uint8)
+        era = np.zeros(len(bits), bool) if erased is None else np.asarray(erased, bool)
+        self.pend = np.concatenate((self.pend, bits))
+        self.pend_era = np.concatenate((self.pend_era, era))
         out: list[bytes] = []
         while True:
             if self.state == "search":
@@ -270,35 +280,43 @@ class Il2pReceiver:
                                      (np.bitwise_count((~val & 0xFFFFFF) ^ SYNC) <= 1))
                 if len(hit) == 0:
                     self.pend = self.pend[-23:]
+                    self.pend_era = self.pend_era[-23:]
                     return out
                 i = int(hit[0])
                 self.polarity = 0 if int(np.bitwise_count(val[i] ^ SYNC)) <= 1 else 1
                 self.pend = self.pend[i + 24:]
+                self.pend_era = self.pend_era[i + 24:]
                 self.state, self.need = "header", HEADER_SIZE + HEADER_PARITY
                 continue
             if len(self.pend) < 8 * self.need:
                 return out
-            chunk = np.packbits(self.pend[:8 * self.need], bitorder="big")
+            nbits = 8 * self.need
+            chunk = np.packbits(self.pend[:nbits], bitorder="big")
+            era_chunk = self.pend_era[:nbits]
             if self.polarity:
                 chunk = ~chunk
             data = chunk.tobytes()
-            self.pend = self.pend[8 * self.need:]
+            self.pend = self.pend[nbits:]
+            self.pend_era = self.pend_era[nbits:]
             if self.state == "header":
-                if not self._header(data):
+                if not self._header(data, era_chunk):
                     self.state = "search"
                 elif self.need == 0:
-                    frame = self._finish(b"")
+                    frame = self._finish(b"", np.zeros(0, bool))
                     if frame is not None:
                         out.append(frame)
                 continue
-            frame = self._finish(data)
+            frame = self._finish(data, era_chunk)
             if frame is not None:
                 out.append(frame)
 
-    def _header(self, data: bytes) -> bool:
-        res = _rs(HEADER_PARITY).decode(data)
+    def _header(self, data: bytes, era_bits: np.ndarray) -> bool:
+        era = self._byte_erasures(era_bits, len(data))
+        res = _rs(HEADER_PARITY).decode(data, era or None)
         if res is None:
             return False
+        if era:
+            self.erasures += len(era)
         self.hdr = descramble_block(res[0][:HEADER_SIZE])
         self.corrected = res[1]
         self.max_fec = bool(_get(self.hdr, 7, 0, 1))
@@ -310,19 +328,26 @@ class Il2pReceiver:
         self.state = "payload"
         return True
 
-    def _finish(self, data: bytes) -> bytes | None:
+    def _finish(self, data: bytes, era_bits: np.ndarray) -> bytes | None:
         self.state = "search"
         payload = b""
         pos = 0
+        pos_bits = 0
         fixed = self.corrected
         for size in self.blocks:
-            block = data[pos:pos + size + self.parity]
-            pos += size + self.parity
-            res = _rs(self.parity).decode(block)
+            block_bytes = size + self.parity
+            block_era = era_bits[pos_bits * 8:(pos_bits + block_bytes) * 8] if len(era_bits) else np.zeros(0, bool)
+            era = self._byte_erasures(block_era, block_bytes)
+            block = data[pos:pos + block_bytes]
+            res = _rs(self.parity).decode(block, era or None)
             if res is None:
                 return None
+            if era:
+                self.erasures += len(era)
             fixed += res[1]
             payload += descramble_block(res[0][:size])
+            pos += block_bytes
+            pos_bits += block_bytes
         try:
             if _get(self.hdr, 7, 1, 1):
                 raw = _decode_type1(self.hdr, payload).encode()
@@ -334,3 +359,13 @@ class Il2pReceiver:
         self.frames += 1
         self.corrected = fixed
         return raw
+
+    @staticmethod
+    def _byte_erasures(era_bits: np.ndarray, n_bytes: int) -> list[int]:
+        """Convert a per-bit erasure mask to a sorted list of erased byte positions."""
+        if len(era_bits) == 0 or not era_bits.any():
+            return []
+        n = min(len(era_bits), n_bytes * 8)
+        reshaped = np.zeros(n_bytes * 8, bool)
+        reshaped[:n] = era_bits[:n]
+        return list(np.flatnonzero(reshaped.reshape(n_bytes, 8).any(axis=1)))

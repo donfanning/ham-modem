@@ -1,4 +1,15 @@
-; Copy to iax_lab_auth.conf (git-ignored) and set a secret; stations pass it in HAM_MODEM_IAX_SECRET.
+; Copy to iax_lab_auth.conf (git-ignored) and fill in your secrets.
+;
+; Option A — shared account (all stations use the same IAX2 user):
+;   HAM_MODEM_IAX_SECRET=changeme  ham-modem --iax-dial 7300@pbx --iax-user station
+;
+; Option B — per-callsign accounts (each station uses its MYCALL as the IAX username):
+;   HAM_MODEM_IAX_SECRET_K1ABC=secret1  ham-modem --mycall K1ABC --iax-dial 7300@pbx
+;   HAM_MODEM_IAX_SECRET_W1XYZ=secret2  ham-modem --mycall W1XYZ --iax-dial 7300@pbx
+;   (--iax-user defaults to lowercase MYCALL without SSID, so K1ABC-1 uses user "k1abc")
+;   (secret lookup: HAM_MODEM_IAX_SECRET_K1ABC first, then HAM_MODEM_IAX_SECRET fallback)
+
+; Shared station account (Option A):
 [station]
 type = friend
 host = dynamic
@@ -7,3 +18,22 @@ context = ham
 disallow = all
 allow = ulaw
 requirecalltoken = no
+
+; Per-callsign examples (Option B) — add one block per station, secret matches env var:
+;[k1abc]
+;type = friend
+;host = dynamic
+;secret = CHANGE_ME_K1ABC
+;context = ham
+;disallow = all
+;allow = ulaw
+;requirecalltoken = no
+;
+;[w1xyz]
+;type = friend
+;host = dynamic
+;secret = CHANGE_ME_W1XYZ
+;context = ham
+;disallow = all
+;allow = ulaw
+;requirecalltoken = no

@@ -198,36 +198,82 @@ class G3ruhDemodulator:
         return self.fx25.corrected
 
     def _run(self, levels: list[bool]) -> list[bytes]:
+        """Demodulate internal-rate samples to bits.
+
+        Phase crossing detection is vectorised: for each constant-level segment between transitions,
+        crossing positions are found analytically (O(1) numpy per segment) instead of iterating
+        every sample.  Per-bit work (descrambler, NRZI, HDLC) runs at the symbol rate.
+        """
+        arr = np.asarray(levels, np.int8)
+        n = len(arr)
+        if n == 0:
+            return []
+
+        # Segment boundaries at transitions + end sentinel.
+        prev_arr = np.empty(n, np.int8)
+        prev_arr[0] = self.prev
+        prev_arr[1:] = arr[:-1]
+        trans = np.flatnonzero(arr != prev_arr)
+        seg_ends = np.concatenate([trans, [n]])
+
+        step = self.step
+        phase = self.phase
+        prev = int(self.prev)
+        quality = self.quality
+        run = self.run
+        ds = self.desc_state
+        nrzi, hdlc = self.nrzi, self.hdlc
+        mask = self._mask
+
         out: list[bytes] = []
         bits: list[int] = []
-        mask = self._mask
-        flags: list[bool] = []
         raw: list[int] = []
-        step, prev, phase, quality, run, ds = self.step, self.prev, self.phase, self.quality, self.run, self.desc_state
-        nrzi, hdlc = self.nrzi, self.hdlc
-        for i, level in enumerate(levels):
-            level = 1 if level else 0
-            if level != prev:
+        flags: list[bool] = []
+
+        seg_start = 0
+        for seg_end in seg_ends:
+            level = int(arr[seg_start])
+
+            if level != prev:                  # transition at seg_start
                 quality = quality * 0.96 + (0.04 if abs(phase) < 0.35 else -0.04)
                 phase *= self.INERTIA_LOCKED if hdlc.active else self.INERTIA_SEARCH
                 prev = level
                 run = 0
-            phase += step
-            if phase >= 1.0:
-                phase -= 2.0
-                run += 1
-                if run > 24:                   # scrambled data never holds a level this long
-                    quality = max(-1.0, quality - 0.1)
-                raw.append(level)
-                bit = (level ^ (ds >> 16) ^ (ds >> 11)) & 1
-                ds = ((ds << 1) | level) & 0x1FFFF
-                d = nrzi.decode(bit)
-                bits.append(d)
-                if mask is not None:
-                    flags.append(mask[i])
-                frame = hdlc.push(d)
-                if frame is not None:
-                    out.append(frame)
+
+            L = int(seg_end) - seg_start
+            # Analytical crossing detection: crossing k (0-indexed) in a segment of L samples
+            # occurs at sample j_k = max(0, ceil((1+2k-phase)/step - 1)).
+            # Maximum k in this segment: floor((L*step + phase - 1) / 2).
+            max_k = int(np.floor((L * step + phase - 1.0) / 2))
+            if max_k >= 0:
+                k_arr = np.arange(max_k + 1)
+                j_local = np.maximum(0, np.ceil((1.0 + 2 * k_arr - phase) / step - 1.0 - 1e-10)).astype(int)
+                valid = j_local < L
+                j_local = j_local[valid]
+                k_last = int(k_arr[valid][-1]) if valid.any() else -1
+                for jl in j_local:
+                    run += 1
+                    if run > 24:               # scrambled data never holds a level this long
+                        quality = max(-1.0, quality - 0.1)
+                    raw.append(level)
+                    bit = (level ^ (ds >> 16) ^ (ds >> 11)) & 1
+                    ds = ((ds << 1) | level) & 0x1FFFF
+                    d = nrzi.decode(bit)
+                    bits.append(d)
+                    if mask is not None:
+                        flags.append(mask[seg_start + int(jl)])
+                    frame = hdlc.push(d)
+                    if frame is not None:
+                        out.append(frame)
+                # Phase at end of segment (no per-sample loop needed).
+                phase = phase + step * L - 2.0 * (k_last + 1)
+            else:
+                phase = phase + step * L
+
+            seg_start = int(seg_end)
+            if seg_start >= n:
+                break
+
         self.prev, self.phase, self.quality, self.run, self.desc_state = (
             prev, phase, max(-1.0, min(1.0, quality)), run, ds)
         if flags:

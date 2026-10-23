@@ -56,6 +56,43 @@ class Il2pTest(unittest.TestCase):
         self.assertEqual(got, [f])
         self.assertGreater(r.corrected, 0)
 
+    def test_erasure_aware_decoding_repairs_more(self):
+        """Erasure-aware RS repair: marking damaged bytes as erased doubles the correctable count."""
+        import numpy as np
+        f = Frame.ui("N0CALL", "APRS", "z" * 100).encode()
+        bits = il2p.burst_levels([f], 4, max_fec=True)
+        # Corrupt 9 consecutive bytes in the payload (> 8: beyond errors-only limit, within erasures limit).
+        byte_start = 4 + 3 + 15   # preamble + sync + header
+        bit_start = byte_start * 8
+        erased = [False] * len(bits)
+        for b in range(9):
+            for bit in range(8):
+                bits[bit_start + b * 8 + bit] ^= 1
+                erased[bit_start + b * 8 + bit] = True
+        # Without erasures → repair fails
+        got_no_era, _ = rx_bits(bits)
+        self.assertEqual(got_no_era, [])
+        # With erasures → repair succeeds
+        r = il2p.Il2pReceiver()
+        got_era = r.feed_bits(bits + [0, 1] * 8, erased + [False] * 16)
+        self.assertEqual(got_era, [f])
+        self.assertGreater(r.erasures, 0)
+
+    def test_erasure_flag_propagates_to_counter(self):
+        """feed_bits with erased bits increments self.erasures."""
+        import numpy as np
+        f = Frame.ui("K1ABC", "APRS", "hello").encode()
+        bits = il2p.burst_levels([f], 4, max_fec=True)
+        # Mark a few payload bits erased without actually corrupting them.
+        erased = [False] * len(bits)
+        byte_offset = (4 + 3 + 15) * 8   # into payload
+        for i in range(8):
+            erased[byte_offset + i] = True
+        r = il2p.Il2pReceiver()
+        got = r.feed_bits(bits + [0, 1] * 8, erased + [False] * 16)
+        self.assertEqual(got, [f])                  # still decoded despite erased flag
+        self.assertGreater(r.erasures, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

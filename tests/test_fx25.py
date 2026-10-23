@@ -115,6 +115,39 @@ class Fx25FramingTest(unittest.TestCase):
         self.assertIsNone(fx25.encode_bits(ui(250), 16))
 
 
+class Fx25TagErasureTest(unittest.TestCase):
+    def test_erased_tag_bits_not_counted_as_errors(self):
+        """Tag bits marked erased should not count against the TAG_MAX_ERRORS threshold."""
+        rng = random.Random(7)
+        frame = ui(50)
+        bits = fx25.burst_bits([frame], 4)
+        # Flip 6 bits inside the 64-bit tag region and mark them erased.
+        tag_offset = 8 * 4    # after 4 lead flags
+        bad_pos = rng.sample(range(tag_offset, tag_offset + 64), 6)
+        for p in bad_pos:
+            bits[p] ^= 1
+        erased = [False] * len(bits)
+        for p in bad_pos:
+            erased[p] = True
+        # Without erasures: 6 tag errors > TAG_MAX_ERRORS (4) → frame not found
+        rx_no_era = fx25.Fx25Receiver()
+        got_no = rx_no_era.feed_bits(bits)
+        # With erasures: erased bits masked out → frame found
+        rx_era = fx25.Fx25Receiver()
+        got_era = rx_era.feed_bits(bits, erased)
+        self.assertGreater(len(got_era), 0, "erased-masked tag should be found")
+        self.assertEqual(got_era, [frame])
+
+    def test_tag_erasure_masking_does_not_break_clean_frames(self):
+        """Erasure-aware tag search delivers clean frames even when no bits are erased."""
+        frames_list = [ui(n) for n in (20, 80, 150)]
+        bits = fx25.burst_bits(frames_list, 4)
+        erased = [False] * len(bits)
+        rx = fx25.Fx25Receiver()
+        got = rx.feed_bits(bits, erased)
+        self.assertEqual(got, frames_list)
+
+
 class Fx25ModemDedupeTest(unittest.TestCase):
     def test_each_fx25_frame_delivered_once_at_300_bd(self):
         # At 300 bd the FX.25 copy decodes > 1 s after the embedded plain copy; both must collapse to one.

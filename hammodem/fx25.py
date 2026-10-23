@@ -243,6 +243,7 @@ class Fx25Receiver:
 
     def __init__(self) -> None:
         self.hist = np.zeros(63, np.uint8)
+        self.hist_era = np.zeros(63, bool)         # erasure flags parallel to hist
         self.collect: tuple[int, int, int, list[np.ndarray], int] | None = None   # tag, n, k, chunks, have
         self.frames = 0
         self.corrected = 0
@@ -286,18 +287,26 @@ class Fx25Receiver:
                                      np.concatenate([c[1] for c in chunks]))
                 if frame is not None:
                     out.append(frame)
-                self.hist = np.zeros(63, np.uint8)       # tags never overlap a codeword just decoded
+                self.hist = np.zeros(63, np.uint8)
+                self.hist_era = np.zeros(63, bool)
                 continue
             ext = np.concatenate((self.hist, bits[pos:]))
+            ext_era = np.concatenate((self.hist_era, erased[pos:]))
             if len(ext) < 64:
-                self.hist = ext[-63:] if len(ext) >= 63 else np.concatenate((np.zeros(63 - len(ext), np.uint8), ext))
+                pad = 63 - len(ext)
+                self.hist = np.concatenate((np.zeros(pad, np.uint8), ext)) if pad else ext[-63:]
+                self.hist_era = np.concatenate((np.zeros(pad, bool), ext_era)) if pad else ext_era[-63:]
                 break
             win = np.lib.stride_tricks.sliding_window_view(ext, 64)
             regs = np.packbits(win, axis=1, bitorder="little").view("<u8")[:, 0]
-            dist = np.bitwise_count(regs[:, None] ^ _TAG_ARRAY[None, :])
+            # Mask erased bits so they don't count as tag errors.
+            era_win = np.lib.stride_tricks.sliding_window_view(ext_era.view(np.uint8), 64)
+            era_regs = np.packbits(era_win, axis=1, bitorder="little").view("<u8")[:, 0]
+            dist = np.bitwise_count((regs[:, None] ^ _TAG_ARRAY[None, :]) & ~era_regs[:, None])
             hit = np.argwhere(dist <= TAG_MAX_ERRORS)
             if len(hit) == 0:
                 self.hist = ext[-63:]
+                self.hist_era = ext_era[-63:]
                 break
             idx, which = hit[0]
             tag = _TAG_IDS[which]
@@ -305,6 +314,7 @@ class Fx25Receiver:
             self.collect = (tag, n, k, [], 0)
             pos += int(idx) + 64 - len(self.hist)       # first bit after the tag, in ``bits`` coordinates
             self.hist = np.zeros(63, np.uint8)
+            self.hist_era = np.zeros(63, bool)
         return out
 
     def _finish(self, bits: np.ndarray, n: int, k: int, erased: np.ndarray | None = None) -> bytes | None:

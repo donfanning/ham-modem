@@ -45,7 +45,8 @@ def _pty(link: str) -> PtySerial:
 
 
 class Runtime:
-    def __init__(self, tnc: Tnc, audio, serials=(), servers=(), tap: tuple[str, int] | None = None) -> None:
+    def __init__(self, tnc: Tnc, audio, serials=(), servers=(), tap: tuple[str, int] | None = None,
+                 nvram: str | None = None) -> None:
         self.tnc, self.audio = tnc, audio
         self.tap = tap
         self._tap_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM) if tap else None
@@ -53,6 +54,9 @@ class Runtime:
         for s in serials:
             mode, mycall = getattr(s, "tnc_mode", ("kiss", None))
             ep = tnc.attach_tnc2(s.write, s.name, mycall or "NOCALL") if mode == "tnc2" else tnc.attach(s.write, s.name)
+            if mode == "tnc2" and nvram:
+                ep._nvram_path = nvram
+                ep.load_nvram(nvram)
             self.links.append((s, ep))
         self.servers = list(servers)
         self.running = True
@@ -134,6 +138,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--tnc2-serial", action="append", default=[], metavar="DEV[:BAUD]",
                     help="TNC-2 command interpreter on a real serial port")
     ap.add_argument("--mycall", default="NOCALL", help="initial MYCALL for TNC-2 ports")
+    ap.add_argument("--nvram", metavar="PATH", default=None,
+                    help="JSON file for TNC-2 settings persistence (loaded on start, saved with WRITE command)")
     ap.add_argument("--kiss-tcp", metavar="[HOST:]PORT", help="KISS-over-TCP server (Direwolf uses 8001)")
     ap.add_argument("--agw", metavar="[HOST:]PORT", help="AGWPE TCP API server (usually 8000)")
     leg = ap.add_mutually_exclusive_group(required=True)
@@ -146,7 +152,9 @@ def main(argv: list[str] | None = None) -> None:
                      help="IAX2: call EXT through the PBX and keep the call up (G.711 mu-law; AFSK modes)")
     leg.add_argument("--iax-listen", metavar="HOST[:PORT]", help="IAX2: register with the PBX and answer calls")
     ap.add_argument("--udp-bind", default="0.0.0.0", metavar="ADDR", help="local address for --udp-audio")
-    ap.add_argument("--iax-user", default="station", help="IAX2 user (secret from HAM_MODEM_IAX_SECRET)")
+    ap.add_argument("--iax-user", default=None,
+                    help="IAX2 username (default: lowercase MYCALL without SSID; "
+                         "secret from HAM_MODEM_IAX_SECRET_USER or HAM_MODEM_IAX_SECRET)")
     ap.add_argument("--sip-port", type=int, default=0, help="local SIP UDP port (default: any; 5060 for --sip-listen)")
     ap.add_argument("--media-port", type=int, default=0, help="local RTP port (default: any)")
     ap.add_argument("--sip-user", help="digest user / From user (password from HAM_MODEM_SIP_PASSWORD)")
@@ -214,8 +222,11 @@ def main(argv: list[str] | None = None) -> None:
             ap.error("IAX2 legs carry G.711 mu-law (8 kHz): use an AFSK modem or a SIP L16 leg")
         from .audio.iax import IaxLeg  # noqa: PLC0415
         ext, _, server = (args.iax_dial or "").rpartition("@")
-        audio = IaxLeg(server if args.iax_dial else args.iax_listen, args.iax_user,
-                       os.environ.get("HAM_MODEM_IAX_SECRET", ""), dial=ext or None, listen=bool(args.iax_listen))
+        iax_user = args.iax_user or args.mycall.split("-")[0].lower()
+        iax_secret = (os.environ.get(f"HAM_MODEM_IAX_SECRET_{iax_user.upper()}")
+                      or os.environ.get("HAM_MODEM_IAX_SECRET", ""))
+        audio = IaxLeg(server if args.iax_dial else args.iax_listen, iax_user,
+                       iax_secret, dial=ext or None, listen=bool(args.iax_listen))
     elif args.udp_audio:
         lport, _, peer = args.udp_audio.partition(":")
         audio = UdpAudio((args.udp_bind, int(lport)), _hostport(peer) if peer else None, args.rate)
@@ -346,7 +357,8 @@ def main(argv: list[str] | None = None) -> None:
     if args.agw:
         servers.append(AgwServer(tnc, *_hostport(args.agw), description=f"{args.modem} over VoIP"))
 
-    rt = Runtime(tnc, audio, serials, servers, tap=_hostport(args.audio_tap) if args.audio_tap else None)
+    rt = Runtime(tnc, audio, serials, servers, tap=_hostport(args.audio_tap) if args.audio_tap else None,
+                 nvram=args.nvram)
     for sig in (signal.SIGINT, signal.SIGTERM):
         signal.signal(sig, lambda *_: setattr(rt, "running", False))
     log.info("%s at %d Hz; audio %s", args.modem, args.rate, audio.name)

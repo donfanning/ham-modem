@@ -1,4 +1,7 @@
+import json
+import os
 import random
+import tempfile
 import unittest
 
 import numpy as np
@@ -91,6 +94,58 @@ class Tnc2CommandTest(unittest.TestCase):
         self.assertAlmostEqual(self.air.tncs[0].channel.txdelay, 0.4)
         self.p.type(bytes((0xC0, 0xFF, 0xC0)))
         self.assertIn("cmd:", self.p.text())
+
+
+class Tnc2NvramTest(unittest.TestCase):
+    def setUp(self):
+        self.air = Air(1)
+        self.p = Port(self.air.tncs[0], "N0CALL")
+        self.p.out.clear()
+
+    def test_write_command_without_nvram_path_says_so(self):
+        self.p.type("WR\r")
+        self.assertIn("no NVRAM path", self.p.text())
+
+    def test_save_and_load_nvram_roundtrip(self):
+        ch = self.air.tncs[0].channel
+        self.p.type("MY K1ABC\rTXDELAY 42\rPERSIST 200\rPACLEN 100\r")
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+        try:
+            self.p.term.save_nvram(path)
+            # Read the JSON directly to verify structure.
+            with open(path) as f:
+                data = json.load(f)
+            self.assertEqual(data["mycall"], "K1ABC")
+            self.assertEqual(data["txdelay"], 42)
+            self.assertEqual(data["paclen"], 100)
+            # Load into a fresh terminal and verify settings transfer.
+            air2 = Air(1)
+            p2 = Port(air2.tncs[0], "NOCALL")
+            p2.term.load_nvram(path)
+            self.assertEqual(str(p2.term.mgr.mycall), "K1ABC")
+            self.assertEqual(round(air2.tncs[0].channel.txdelay * 100), 42)
+            self.assertEqual(p2.term.params.paclen, 100)
+        finally:
+            os.unlink(path)
+
+    def test_load_missing_nvram_is_silent(self):
+        self.p.term.load_nvram("/nonexistent/path/nvram.json")
+        # No exception; settings unchanged.
+        self.assertEqual(str(self.p.term.mgr.mycall), "N0CALL")
+
+    def test_write_command_saves_to_configured_path(self):
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
+            path = f.name
+        try:
+            self.p.term._nvram_path = path
+            self.p.type("MY W1AW\rWR\r")
+            self.assertIn("settings saved", self.p.text())
+            with open(path) as f:
+                data = json.load(f)
+            self.assertEqual(data["mycall"], "W1AW")
+        finally:
+            os.unlink(path)
 
 
 class Tnc2LinkTest(unittest.TestCase):

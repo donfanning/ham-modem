@@ -5,12 +5,15 @@ transparent modes, monitoring, ``UNPROTO``/``BEACON``, and ``KISS ON`` to hand t
 Commands may be abbreviated as on the TNC-2 (``C`` for CONNECT, ``K`` for CONVERSE, ``MY`` for MYCALL ...).
 Ctrl-C returns from converse/transparent mode to command mode.
 
-One connection per port (the TNC-2's single stream); settings are per port and not persisted yet.
+Settings can be persisted to a JSON file (NVRAM): ``load_nvram(path)`` on startup and ``WRITE`` from the
+``cmd:`` prompt to save.  ``--nvram PATH`` in main.py wires this up automatically.
 """
 
 from __future__ import annotations
 
+import json
 import logging
+import os
 import time
 
 from . import kiss
@@ -29,7 +32,7 @@ _COMMANDS = [
     ("BEACON", 1), ("BTEXT", 2), ("CONNECT", 1), ("CONOK", 4), ("CONVERSE", 4), ("DISCONNE", 1), ("DISPLAY", 4),
     ("ECHO", 1), ("FRACK", 1), ("HELP", 1), ("K", 1), ("KISS", 4), ("MAXFRAME", 3), ("MCON", 3), ("MHEARD", 2),
     ("MONITOR", 1), ("MYCALL", 2), ("PACLEN", 1), ("PERSIST", 4), ("RESTART", 7), ("RETRY", 2), ("SLOTTIME", 2),
-    ("TRANS", 1), ("TXDELAY", 2), ("UNPROTO", 1), ("?", 1),
+    ("TRANS", 1), ("TXDELAY", 2), ("UNPROTO", 1), ("WRITE", 2), ("?", 1),
 ]
 
 
@@ -72,6 +75,7 @@ class Tnc2Terminal:
         self.link = None
         self._awaiting_link = False
         self._kiss: kiss.Decoder | None = None
+        self._nvram_path: str | None = None
         self._out(BANNER)
         self._prompt()
 
@@ -378,6 +382,13 @@ class Tnc2Terminal:
                             ("BEACON", f"EVERY {int(self.beacon_every // 10)}")]:
             self._show(f"  {name:<9}", value)
 
+    def _cmd_write(self, arg: str) -> None:
+        if not self._nvram_path:
+            self._say("no NVRAM path configured (use --nvram)")
+            return
+        self.save_nvram(self._nvram_path)
+        self._say(f"settings saved to {self._nvram_path}")
+
     def _cmd_restart(self, arg: str) -> None:
         if self.link is not None:
             self.link.disconnect()
@@ -385,6 +396,74 @@ class Tnc2Terminal:
 
     def _cmd_help(self, arg: str) -> None:
         self._out(b"Commands: " + " ".join(n for n, _ in _COMMANDS if len(n) > 1).encode() + b"\r\n")
+
+    # ---------------------------------------------------------------- NVRAM persistence
+
+    def save_nvram(self, path: str) -> None:
+        """Save current settings to a JSON file."""
+        ch, p = self.tnc.channel, self.params
+        dest, via = self.unproto
+        data = {
+            "mycall": str(self.mgr.mycall),
+            "monitor": self.monitor,
+            "mcon": self.mcon,
+            "echo": self.echo,
+            "conok": self.conok,
+            "unproto": str(dest) + (" VIA " + ",".join(map(str, via)) if via else ""),
+            "btext": self.btext,
+            "beacon_every": int(self.beacon_every // 10),
+            "txdelay": round(ch.txdelay * 100),
+            "persist": ch.persist,
+            "slottime": round(ch.slottime * 100),
+            "frack": int(p.frack),
+            "maxframe": p.maxframe,
+            "paclen": p.paclen,
+            "retry": p.retry,
+        }
+        tmp = path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(data, f, indent=2)
+        os.replace(tmp, path)
+
+    def load_nvram(self, path: str) -> None:
+        """Load settings from a JSON file; silently ignores missing or corrupt files."""
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except Exception:
+            log.warning("nvram: could not read %s", path)
+            return
+        ch, p = self.tnc.channel, self.params
+        try:
+            if "mycall" in data:
+                self.mgr.mycall = Address.parse(data["mycall"])
+            for attr in ("monitor", "mcon", "echo", "conok"):
+                if attr in data:
+                    setattr(self, attr, bool(data[attr]))
+            if "unproto" in data:
+                self.unproto = self._parse_path(data["unproto"])
+            if "btext" in data:
+                self.btext = str(data["btext"])[:120]
+            if "beacon_every" in data:
+                self.beacon_every = max(0, int(data["beacon_every"])) * 10.0
+            if "txdelay" in data:
+                ch.txdelay = max(0, min(120, int(data["txdelay"]))) / 100.0
+            if "persist" in data:
+                ch.persist = max(0, min(255, int(data["persist"])))
+            if "slottime" in data:
+                ch.slottime = max(0, min(250, int(data["slottime"]))) / 100.0
+            if "frack" in data:
+                p.frack = float(max(1, min(15, int(data["frack"]))))
+            if "maxframe" in data:
+                p.maxframe = max(1, min(7, int(data["maxframe"])))
+            if "paclen" in data:
+                p.paclen = max(1, min(256, int(data["paclen"])))
+            if "retry" in data:
+                p.retry = max(0, min(15, int(data["retry"])))
+        except Exception as exc:
+            log.warning("nvram: error applying %s: %s", path, exc)
 
     @staticmethod
     def _parse_path(arg: str) -> tuple[Address, list[Address]]:
