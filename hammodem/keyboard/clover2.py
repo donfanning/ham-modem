@@ -72,8 +72,8 @@ SCALE = 16384                   # audio int16 scale (half of 32768 for headroom)
 # ---------------------------------------------------------------------------
 
 class Mode(IntEnum):
-    PSM2D  = 0   # dual-diversity BPSK  (0.5 bits/pulse → 62.5 bps)
-    FSM2D  = 1   # dual-diversity FSK   (0.5 bits/pulse → 62.5 bps)
+    PSM2D  = 0   # dual-pulse diversity BPSK  (2 bits/frame → 62.5 bps)
+    FSM2D  = 1   # dual-pulse diversity (BPSK implementation) (2 bits/frame → 62.5 bps)
     BPSM   = 2   # BPSK                 (1 bit/pulse   → 125 bps)
     QPSM   = 3   # QPSK                 (2 bits/pulse  → 250 bps)
     PSM8   = 4   # 8-PSK                (3 bits/pulse  → 375 bps)
@@ -82,8 +82,8 @@ class Mode(IntEnum):
     P16A4  = 7   # 16-PSK + 4-ASK      (6 bits/pulse  → 750 bps)
 
 _BITS_PER_PULSE = {
-    Mode.PSM2D: 1,   # 1 bit across 2 pulses (diversity)
-    Mode.FSM2D: 1,
+    Mode.PSM2D: 0.5,   # 1 bit across 2 pulses (diversity)
+    Mode.FSM2D: 0.5,
     Mode.BPSM:  1,
     Mode.QPSM:  2,
     Mode.PSM8:  3,
@@ -414,19 +414,18 @@ class Clover2Modulator:
         bpp = _BITS_PER_PULSE[self.mode]
 
         if self.mode in (Mode.PSM2D, Mode.FSM2D):
-            # Dual-diversity: repeat each bit on two consecutive same-freq pulses
-            # encode as BPSK with repetition
-            n_syms = len(bits)
+            # Dual-pulse diversity: send each bit on two of the four pulses.
+            # Two information bits per 32-ms frame gives the advertised
+            # 62.5 bps, while the receiver combines each pair before slicing.
             frames = []
             bit_idx = 0
-            while bit_idx < n_syms:
+            while bit_idx < len(bits):
+                pair = []
+                for _ in range(2):
+                    pair.append(int(bits[bit_idx]) if bit_idx < len(bits) else 0)
+                    bit_idx += 1
                 frame_syms = np.zeros(4, dtype=complex)
-                for tone_i in range(4):
-                    if bit_idx < n_syms:
-                        b = bits[bit_idx]
-                        bit_idx += 1
-                    else:
-                        b = 0
+                for tone_i, b in enumerate((pair[0], pair[0], pair[1], pair[1])):
                     phase = np.pi * b   # BPSK
                     frame_syms[tone_i] = np.exp(1j * phase)
                 frames.append(frame_syms)
@@ -567,9 +566,10 @@ class Clover2Demodulator:
                 frame_syms[tone_i] = complex(I, -Q)
 
             if self.mode in (Mode.PSM2D, Mode.FSM2D):
-                for sym in frame_syms:
-                    b = 0 if np.real(sym) >= 0 else 1
-                    all_bits.append(b)
+                # Two diversity pairs per frame: (tone 0, 1) and (tone 2, 3).
+                for a_i, b_i in ((0, 1), (2, 3)):
+                    metric = np.real(frame_syms[a_i]) + np.real(frame_syms[b_i])
+                    all_bits.append(0 if metric >= 0 else 1)
             elif const is not None:
                 for sym in frame_syms:
                     # Nearest constellation point
@@ -735,3 +735,7 @@ class Clover2Tnc:
             else:
                 out.extend(chunk)
         return bytes(out)
+
+    def reset(self) -> None:
+        """Discard demodulator state between independent ARQ bursts."""
+        self._demod._buf = np.zeros(0, dtype=np.float64)

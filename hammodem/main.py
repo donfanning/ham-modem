@@ -31,6 +31,13 @@ from .audio.udp import UdpAudio
 
 log = logging.getLogger("hammodem")
 
+# Modes that use a text terminal and their own modem, not the AX.25 packet TNC.
+TEXT_MODEMS = (
+    "amtor", "pactor", "pactor2", "pactor3", "clover2", "rtty", "psk31", "psk63", "mfsk16",
+    "olivia", "contestia", "dominoex", "thor", "js8", "milstd", "stanag4285",
+)
+SPECIAL_MODEMS = ("ardop",)
+
 
 def _hostport(text: str, default_host: str = "127.0.0.1") -> tuple[str, int]:
     host, _, port = text.rpartition(":")
@@ -124,8 +131,7 @@ class Runtime:
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="ham-modem", description="AX.25 packet TNC over VoIP audio")
-    ap.add_argument("--modem", choices=(*MODEMS, "ardop", "amtor", "pactor", "rtty", "psk31", "psk63", "mfsk16",
-                                       "olivia", "contestia", "dominoex", "thor", "js8", "milstd", "stanag4285"), default="afsk1200",
+    ap.add_argument("--modem", choices=(*MODEMS, *SPECIAL_MODEMS, *TEXT_MODEMS), default="afsk1200",
                     help="'ardop': an ARDOP (Winlink) TNC with an ardopcf-compatible host interface instead of AX.25")
     ap.add_argument("--rate", type=int, help="audio sample rate (default: 8000 for AFSK, 16000 for g3ruh9600, "
                                              "48000 for g3ruh19200/38400)")
@@ -190,6 +196,15 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--amtor-reply", type=int, default=50, metavar="MS",
                     help="AMTOR ARQ: slave reply delay after a received burst (the audio round trip must fit "
                          "in 240 ms minus this minus 70 ms)")
+    ap.add_argument("--pactor2-level", type=int, choices=(1, 2, 3, 4), default=2,
+                    help="PACTOR-II: speed level (default 2)")
+    ap.add_argument("--pactor3-level", type=int, choices=(1, 2, 3, 4, 5, 6), default=2,
+                    help="PACTOR-III: speed level (default 2)")
+    ap.add_argument("--clover-mode", choices=("psm2d", "fsm2d", "bpsm", "qpsm", "psm8", "psm16",
+                                              "p8a2", "p16a4"), default="qpsm",
+                    help="Clover-II modulation (default qpsm)")
+    ap.add_argument("--clover-bias", choices=("robust", "normal", "fast"), default="normal",
+                    help="Clover-II Reed-Solomon bias (default normal)")
     ap.add_argument("--ardop-host", metavar="[HOST:]PORT", default="127.0.0.1:8515",
                     help="ARDOP: host interface command port (data on PORT+1), as ardopcf (default 8515)")
     ap.add_argument("--arqbw", default="500MAX", help="ARDOP: ARQ bandwidth (e.g. 500MAX, 2000MAX, 200FORCED)")
@@ -204,9 +219,7 @@ def main(argv: list[str] | None = None) -> None:
     logging.basicConfig(level=logging.DEBUG if args.verbose else logging.INFO,
                         format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
 
-    if args.modem in ("ardop", "amtor", "pactor", "rtty"):
-        tnc = None
-    else:
+    if args.modem in MODEMS:
         try:
             tnc = Tnc(args.modem, args.rate, txdelay=args.txdelay / 1000, persist=args.persist,
                       slottime=args.slottime / 1000, txtail=args.txtail / 1000,
@@ -214,8 +227,13 @@ def main(argv: list[str] | None = None) -> None:
                       il2p={"off": None, "on": False, "max": True}[args.il2p])
         except ValueError as exc:
             ap.error(str(exc))
+    else:
+        tnc = None
     if args.monitor and tnc is not None:
         tnc.monitor = lambda d, text: print(f"{time.strftime('%H:%M:%S')} {d} {text}", flush=True)
+
+    if args.modem in TEXT_MODEMS and not (args.text_pty or args.text_tcp):
+        ap.error(f"--modem {args.modem} needs --text-pty or --text-tcp")
 
     if args.iax_dial or args.iax_listen:
         if args.rate != 8000:
@@ -244,13 +262,10 @@ def main(argv: list[str] | None = None) -> None:
         station = ArqStation(args.mycall, fs=args.rate, bandwidth=args.arqbw.upper(), drive=args.drive / 100)
         run_ardop(station, audio, *_hostport(args.ardop_host))
         return
-    if args.modem in ("amtor", "pactor", "rtty", "psk31", "psk63", "mfsk16", "olivia", "contestia",
-                      "dominoex", "thor", "js8", "milstd", "stanag4285"):
+    if args.modem in TEXT_MODEMS:
         ports = [_pty(p) for p in args.text_pty]
         if args.text_tcp:
             ports.append(TcpSerial(*_hostport(args.text_tcp)))
-        if not ports:
-            ap.error(f"--modem {args.modem} needs --text-pty or --text-tcp")
     if args.modem == "rtty":
         from .keyboard.rtty import RttyDemodulator, RttyModulator  # noqa: PLC0415
         from .keyboard.tnc import KeyboardTnc, run as run_kb  # noqa: PLC0415
@@ -341,6 +356,35 @@ def main(argv: list[str] | None = None) -> None:
         log.info("AMTOR %s (selcal %s) at %d Hz; audio %s; text on %s", args.mycall, "", args.rate, audio.name,
                  ", ".join(p.name for p in ports))
         run_amtor(AmtorTnc(args.mycall, args.rate, center=args.kb_center, reply_ms=args.amtor_reply), audio, ports)
+        return
+    if args.modem == "pactor2":
+        from .keyboard.pactor2_link import Pactor2Terminal  # noqa: PLC0415
+        from .keyboard.tnc import run as run_kb  # noqa: PLC0415
+        log.info("PACTOR-II %s level %d at %d Hz; audio %s; text on %s", args.mycall,
+                 args.pactor2_level, args.rate, audio.name, ", ".join(p.name for p in ports))
+        run_kb(Pactor2Terminal(args.mycall, fs=args.rate, level=args.pactor2_level), audio, ports)
+        return
+    if args.modem == "pactor3":
+        from .keyboard.pactor3_link import Pactor3Terminal  # noqa: PLC0415
+        from .keyboard.tnc import run as run_kb  # noqa: PLC0415
+        log.info("PACTOR-III %s level %d at %d Hz; audio %s; text on %s", args.mycall,
+                 args.pactor3_level, args.rate, audio.name, ", ".join(p.name for p in ports))
+        run_kb(Pactor3Terminal(args.mycall, fs=args.rate, level=args.pactor3_level), audio, ports)
+        return
+    if args.modem == "clover2":
+        from .keyboard.clover2 import Mode  # noqa: PLC0415
+        from .keyboard.clover2_link import Clover2Terminal  # noqa: PLC0415
+        from .keyboard.tnc import run as run_kb  # noqa: PLC0415
+        mode = {
+            "psm2d": Mode.PSM2D, "fsm2d": Mode.FSM2D, "bpsm": Mode.BPSM,
+            "qpsm": Mode.QPSM, "psm8": Mode.PSM8, "psm16": Mode.PSM16,
+            "p8a2": Mode.P8A2, "p16a4": Mode.P16A4,
+        }[args.clover_mode]
+        log.info("Clover-II %s %s %s at %d Hz; audio %s; text on %s", args.mycall,
+                 args.clover_mode.upper(), args.clover_bias, args.rate, audio.name,
+                 ", ".join(p.name for p in ports))
+        run_kb(Clover2Terminal(args.mycall, fs=args.rate, mode=mode, bias=args.clover_bias),
+               audio, ports)
         return
     serials = [_pty(p) for p in args.kiss_pty]
     for spec in args.serial:

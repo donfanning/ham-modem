@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 *.wav
+!docs/refs/audio_samples/*.wav
 *.egg-info/
 build/
 dist/

@@ -4,10 +4,11 @@ version = "0.1.0.dev0"
 description = "AX.25 packet TNC whose radio channel is VoIP audio (SIP/IAX2 calls and conference bridges)"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.11"
-dependencies = ["numpy>=1.26", "Pillow>=10.0"]
+dependencies = ["numpy>=2.0", "Pillow>=10.0"]
 
 [project.scripts]
 ham-modem = "hammodem.main:main"
+ham-image = "hammodem.image_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
