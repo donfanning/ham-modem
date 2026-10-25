@@ -35,8 +35,8 @@ equipment. The [validation guide](docs/TESTING_VALIDATION.md) spells out what ea
   result for that setup rather than a general link rating.
 - **Experimental HF modes:** local peer tests do not establish interoperability with SCS or HAL equipment.
 
-Browse [dated lab reports](lab/) for configurations, outcomes, raw station logs, and limits. The [project plan](docs/PLAN.md)
-tracks remaining work.
+Browse [dated lab reports](lab/) for configurations, summarized outcomes, and limits. Transient station logs are
+excluded from the public repository. The [project plan](docs/PLAN.md) tracks remaining work.
 
 ## Install and run
 

@@ -31,6 +31,11 @@ The configuration is for an isolated software lab. LinBPQ uses `KL7EET-1` / `KL7
 `18001`; JNOS uses `KL7EET-3` / `KL7EET-4` and KISS-TCP port `18002`. Run one ham-modem station for each node;
 both join ConfBridge room 7300. Do not attach a real transmitter to this configuration.
 
+Before starting the containers, replace the `SET_A_LOCAL_LAB_PASSWORD`, `SET_LOCAL_USERNAME`, and
+`SET_LOCAL_PASSWORD` placeholders in `linbpq/bpq32.cfg` and `SET_A_LOCAL_LAB_PASSWORD` in
+`jnos/autoexec.nos` with credentials chosen for your isolated lab. No working passwords are included in the
+repository.
+
 ## Live channel test
 
 Start a ham-modem audio/KISS-TCP station for LinBPQ on the lab host:
@@ -58,8 +63,8 @@ Start a TNC-2 peer in a second terminal, using a PTY opened by a terminal progra
 ```
 
 For LinBPQ, connect to the host-side bridge address shown by `docker inspect ham-lab-linbpq`, TCP port 8010.
-Log in with the lab credentials configured local credentials; issue `C 1 N0AAA`, then type a short message. The N0AAA PTY should
-show the connected status and message.
+Log in with the username and password you configured; issue `C 1 N0AAA`, then type a short message. The N0AAA
+PTY should show the connected status and message.
 
 For JNOS, attach to its console with `docker attach --sig-proxy=false ham-lab-jnos`. At `jnos>`, enter `session`,
 then `c vhf N0AAA`; after the AX.25 session connects, type a short message. The N0AAA PTY should receive it.
