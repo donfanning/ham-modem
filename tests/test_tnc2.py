@@ -108,7 +108,7 @@ class Tnc2NvramTest(unittest.TestCase):
 
     def test_save_and_load_nvram_roundtrip(self):
         ch = self.air.tncs[0].channel
-        self.p.type("MY K1ABC\rTXDELAY 42\rPERSIST 200\rPACLEN 100\r")
+        self.p.type("MY K1ABC\rTXDELAY 42\rPERSIST 200\rPACLEN 100\rMAXSTREAM 6\r")
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as f:
             path = f.name
         try:
@@ -119,6 +119,7 @@ class Tnc2NvramTest(unittest.TestCase):
             self.assertEqual(data["mycall"], "K1ABC")
             self.assertEqual(data["txdelay"], 42)
             self.assertEqual(data["paclen"], 100)
+            self.assertEqual(data["max_streams"], 6)
             # Load into a fresh terminal and verify settings transfer.
             air2 = Air(1)
             p2 = Port(air2.tncs[0], "NOCALL")
@@ -126,6 +127,7 @@ class Tnc2NvramTest(unittest.TestCase):
             self.assertEqual(str(p2.term.mgr.mycall), "K1ABC")
             self.assertEqual(round(air2.tncs[0].channel.txdelay * 100), 42)
             self.assertEqual(p2.term.params.paclen, 100)
+            self.assertEqual(p2.term.max_streams, 6)
         finally:
             os.unlink(path)
 
@@ -149,6 +151,64 @@ class Tnc2NvramTest(unittest.TestCase):
 
 
 class Tnc2LinkTest(unittest.TestCase):
+    def test_incoming_connections_allocate_separate_streams(self):
+        air = Air(3)
+        a = Port(air.tncs[0], "N0CALL")
+        b = Port(air.tncs[1], "K1ABC")
+        c = Port(air.tncs[2], "W1XYZ")
+
+        b.type("C N0CALL\r")
+        air.run(3)
+        c.type("C N0CALL\r")
+        air.run(3)
+
+        self.assertEqual(len(a.term.streams), 2)
+        self.assertEqual(a.term.current_stream, 0)
+        self.assertEqual(a.term.streams[0].name, "K1ABC")
+        self.assertEqual(a.term.streams[1].name, "W1XYZ")
+
+        a.type(b"\x03STREAM 1\rK\rhello inbound stream\r")
+        air.run(2)
+        self.assertIn("hello inbound stream\r\n", c.text())
+        self.assertNotIn("\r\nhello inbound stream\r\n", b.text())
+
+    def test_multiple_streams_keep_connected_links_and_data_separate(self):
+        air = Air(3)
+        a = Port(air.tncs[0], "N0CALL")
+        b = Port(air.tncs[1], "K1ABC")
+        c = Port(air.tncs[2], "W1XYZ")
+
+        a.type("C K1ABC\r")
+        air.run(3)
+        self.assertEqual(a.term.current_stream, 0)
+        self.assertIn("*** CONNECTED to K1ABC on stream 0", a.text())
+
+        a.type(b"\x03STREAM 1\rC W1XYZ\r")
+        air.run(3)
+        self.assertEqual(a.term.current_stream, 1)
+        self.assertEqual(len(a.term.streams), 2)
+        self.assertIn("*** CONNECTED to W1XYZ on stream 1", a.text())
+
+        a.type(b"\x03MAXSTREAM 1\r")
+        self.assertIn("?bad parameter (disconnect streams above new maximum first)", a.text())
+        self.assertEqual(a.term.max_streams, 4)
+        a.type("K\r")
+
+        a.type("second stream only\r")
+        air.run(2)
+        self.assertIn("second stream only\r\n", c.text())
+        self.assertNotIn("\r\nsecond stream only\r\n", b.text())
+
+        a.type(b"\x1cfirst stream only\r")
+        air.run(2)
+        self.assertEqual(a.term.current_stream, 0)
+        self.assertIn("first stream only\r\n", b.text())
+        self.assertNotIn("\r\nfirst stream only\r\n", c.text())
+
+        a.type(b"\x03STREAM\r")
+        self.assertIn("STREAM 0: K1ABC CONNECTED", a.text())
+        self.assertIn("STREAM 1: W1XYZ CONNECTED", a.text())
+
     def test_connect_chat_disconnect_over_audio(self):
         air = Air(2)
         a, b = Port(air.tncs[0], "N0CALL"), Port(air.tncs[1], "K1ABC")

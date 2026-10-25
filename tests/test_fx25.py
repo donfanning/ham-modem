@@ -147,6 +147,16 @@ class Fx25TagErasureTest(unittest.TestCase):
         got = rx.feed_bits(bits, erased)
         self.assertEqual(got, frames_list)
 
+    def test_tag_search_rejects_window_with_too_few_known_bits(self):
+        frame = ui(50)
+        bits = fx25.burst_bits([frame], 4)
+        tag_start = 8 * 4
+        erased = [False] * len(bits)
+        erased[tag_start:tag_start + 33] = [True] * 33
+        # At most 31 known tag bits cannot uniquely identify the FX.25 codeword.
+        rx = fx25.Fx25Receiver()
+        self.assertEqual(rx.feed_bits(bits, erased), [])
+
 
 class Fx25ModemDedupeTest(unittest.TestCase):
     def test_each_fx25_frame_delivered_once_at_300_bd(self):

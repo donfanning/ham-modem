@@ -98,6 +98,7 @@ class LinkBase:
         self._deadline = 0
         self._retries = 0
         self._seq = 0
+        self._rx_seq = 0
         self._clock = 0
         self._rx = np.zeros(0, dtype=np.float64)
         self._tx = np.zeros(0, dtype=np.int16)
@@ -228,7 +229,7 @@ class LinkBase:
         if result is None:
             self.stats.bad += 1
             if self.state == "connected" and self.role == "irs":
-                self._queue_control(CS_NACK, self._seq)
+                self._queue_control(CS_NACK, self._rx_seq)
             return
 
         status = int(result.get("status", 0))
@@ -251,12 +252,17 @@ class LinkBase:
             self.state = "connected"
             self.role = "irs"
             self._seq = 0
+            self._rx_seq = 0
             self._queue_control(CS_CONNECT)
             self._event(f"connected to {self.remote}")
 
         elif kind == F_DATA:
             if self.state == "connected" and self.role == "irs":
-                self.on_text(payload.rstrip(b"\x00"))
+                if seq == self._rx_seq:
+                    self.on_text(payload.rstrip(b"\x00"))
+                    self._rx_seq ^= 1
+                # A retransmission after a lost ACK carries the previous bit.
+                # ACK it again, but do not pass its payload to the application twice.
                 self._queue_control(CS_ACK, seq)
             else:
                 self._queue_control(CS_NACK, seq)

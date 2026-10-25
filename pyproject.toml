@@ -6,6 +6,9 @@ license = "GPL-3.0-or-later"
 requires-python = ">=3.11"
 dependencies = ["numpy>=2.0", "Pillow>=10.0"]
 
+[project.optional-dependencies]
+audio = ["sounddevice>=0.5"]
+
 [project.scripts]
 ham-modem = "hammodem.main:main"
 ham-image = "hammodem.image_cli:main"

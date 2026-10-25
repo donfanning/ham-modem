@@ -27,7 +27,7 @@ from ..fx25 import Fx25Receiver
 from ..fx25 import burst_bits as fx25_burst_bits
 from .afsk import _Fir
 from .g3ruh import Scrambler, _dedupe
-from .hdlc import HdlcDecoder, track_burst
+from .hdlc import HdlcDecoder, extend_bits, span_mask, track_burst
 
 RS = 6400                       # symbols/s
 SPS = 10                        # internal samples per symbol
@@ -37,6 +37,7 @@ BETA = 0.2
 SPAN = 12                       # RRC length, symbols
 PRE_LEN = 128
 RATES = {"qam38400": 6, "qam51200": 8}     # bits per symbol
+ERASE_TAIL = 17                       # self-synchronising scrambler taps at delays 12 and 17
 
 
 def rrc(beta: float, span: int, sps: int) -> np.ndarray:
@@ -148,6 +149,9 @@ class QamDemodulator:
         self._n = 0                                   # internal samples mixed so far
         self.z = np.zeros(0, complex)                 # matched-filter output not yet consumed
         self.z_abs = 0                                # absolute internal index of z[0]
+        self._spans: list[tuple[int, int]] = []
+        self._since = 1 << 30
+        self._last_era = None
         self.state = "idle"
         self.onset = 0
         tmpl = np.zeros(PRE_LEN * SPS, complex)
@@ -196,6 +200,9 @@ class QamDemodulator:
     def feed(self, pcm: np.ndarray | bytes, erased: bool = False) -> list[bytes]:
         if isinstance(pcm, (bytes, bytearray, memoryview)):
             pcm = np.frombuffer(pcm, dtype="<i2")
+        if erased:
+            n_internal = len(pcm) * self.up
+            self._spans.append((self._n, self._n + n_internal + len(self._mf.taps) - 1))
         out: list[bytes] = []
         for i in range(0, len(pcm), self.CHUNK):
             out += self._feed(pcm[i:i + self.CHUNK])
@@ -243,7 +250,12 @@ class QamDemodulator:
             self._trim(len(self.z) - self.IDLE_KEEP)
         if len(bits):
             data = self._descramble(bits)
-            out = self.hdlc.push_bits(data) + self.fx25.feed_bits(data)
+            if self._last_era is not None:
+                ext, self._since = extend_bits(self._last_era, self._since, ERASE_TAIL)
+            else:
+                ext = None
+                self._since += len(data)
+            out = self.hdlc.push_bits(data) + self.fx25.feed_bits(data, ext)
             out = _dedupe(self, out, len(data))
         return out
 
@@ -304,9 +316,11 @@ class QamDemodulator:
         h = const.half
         out_bits: list[int] = []
         nominal = float(SPS)
+        strobes: list[np.ndarray] = []
         while self.pos + self.BLOCK * self.period + 2 < len(self.z):
             k = np.arange(self.BLOCK)
             p = self.pos + k * self.period
+            strobes.append(p.copy())
             zk = self._interp(p).tolist()
             c = self.c
             rot = self.rot
@@ -349,9 +363,18 @@ class QamDemodulator:
             mse = err_acc / self.BLOCK
             self.quality = self.quality * 0.8 + 0.2 * (1.0 if mse < const.scale ** 2 * 0.25 else -1.0)
         keep = max(0, int(self.pos) - 2 * SPS)
+        base = self.z_abs
         self._trim(keep)
         self.pos -= keep
-        return np.array(out_bits, np.uint8)
+        bits = np.array(out_bits, np.uint8)
+        self._last_era = None
+        if self._spans and strobes:
+            at = base + np.concatenate(strobes).astype(np.int64)
+            mask = span_mask(self._spans, int(at[0]), int(at[-1] - at[0]) + 1)
+            sym_era = mask[at - at[0]]
+            self._last_era = np.repeat(sym_era, self.const.bits)
+            self._spans = [span for span in self._spans if span[1] > int(at[-1])]
+        return bits
 
     def _descramble(self, line: np.ndarray) -> np.ndarray:
         hist = np.array([(self.desc >> (16 - m)) & 1 for m in range(17)], np.uint8)

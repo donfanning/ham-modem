@@ -33,6 +33,7 @@ PREAMBLE = 0x55
 SYNC = 0xF15E48
 HEADER_SIZE, HEADER_PARITY = 13, 2
 MAX_PAYLOAD = 1023
+SYNC_MIN_KNOWN_BITS = 16             # do not accept sync matches based on an almost entirely erased window
 
 # IL2Pc CRC (IL2P Specification Draft v0.6, §"Optional Trailing CRC with Hamming Encoding")
 _HAMMING_ENC = (0x00, 0x71, 0x62, 0x13, 0x54, 0x25, 0x36, 0x47,
@@ -326,14 +327,20 @@ class Il2pReceiver:
                 win = np.lib.stride_tricks.sliding_window_view(self.pend, 24)
                 b = np.packbits(win, axis=1, bitorder="big").astype(np.uint32)
                 val = (b[:, 0] << 16) | (b[:, 1] << 8) | b[:, 2]
-                hit = np.flatnonzero((np.bitwise_count(val ^ SYNC) <= 1) |
-                                     (np.bitwise_count((~val & 0xFFFFFF) ^ SYNC) <= 1))
+                era_win = np.lib.stride_tricks.sliding_window_view(self.pend_era, 24)
+                eb = np.packbits(era_win, axis=1, bitorder="big").astype(np.uint32)
+                era_val = (eb[:, 0] << 16) | (eb[:, 1] << 8) | eb[:, 2]
+                known = np.uint32(0xFFFFFF) ^ era_val
+                known_enough = (24 - np.bitwise_count(era_val)) >= SYNC_MIN_KNOWN_BITS
+                dist = np.bitwise_count((val ^ SYNC) & known)
+                dist_inv = np.bitwise_count(((~val & 0xFFFFFF) ^ SYNC) & known)
+                hit = np.flatnonzero(known_enough & ((dist <= 1) | (dist_inv <= 1)))
                 if len(hit) == 0:
                     self.pend = self.pend[-23:]
                     self.pend_era = self.pend_era[-23:]
                     return out
                 i = int(hit[0])
-                self.polarity = 0 if int(np.bitwise_count(val[i] ^ SYNC)) <= 1 else 1
+                self.polarity = 0 if int(dist[i]) <= 1 else 1
                 self.pend = self.pend[i + 24:]
                 self.pend_era = self.pend_era[i + 24:]
                 self.state, self.need = "header", HEADER_SIZE + HEADER_PARITY

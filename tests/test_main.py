@@ -84,5 +84,32 @@ class PacketModeDispatchTest(unittest.TestCase):
         runtime_cls.assert_called_once()
 
 
+class SystemAudioDispatchTest(unittest.TestCase):
+    def test_audio_input_and_output_select_system_audio_leg(self):
+        fake_audio = _FakeAudio()
+        with patch.object(main_mod, "Tnc") as tnc_cls, \
+             patch("hammodem.audio.device.DeviceAudio", return_value=fake_audio) as device_cls, \
+             patch.object(main_mod, "Runtime") as runtime_cls:
+            runtime_cls.return_value.run.return_value = None
+            main_mod.main(["--modem", "afsk1200", "--audio-backend", "portaudio", "--audio-in", "Cable A.monitor", "--audio-out", "Cable B"])
+        tnc_cls.assert_called_once()
+        device_cls.assert_called_once_with("Cable A.monitor", "Cable B", 8000)
+        runtime_cls.assert_called_once()
+
+    def test_audio_input_output_must_be_paired(self):
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            with self.assertRaises(SystemExit) as cm:
+                main_mod.main(["--modem", "afsk1200", "--audio-in", "Cable A.monitor"])
+        self.assertEqual(cm.exception.code, 2)
+        self.assertIn("must be provided together", err.getvalue())
+
+    def test_audio_device_listing_needs_no_audio_leg(self):
+        with patch("hammodem.audio.device.format_all_audio_devices", return_value="0 Input Cable") as listing, \
+             contextlib.redirect_stdout(io.StringIO()) as out:
+            main_mod.main(["--list-audio-devices"])
+        listing.assert_called_once_with()
+        self.assertEqual(out.getvalue().strip(), "0 Input Cable")
+
+
 if __name__ == "__main__":
     unittest.main()

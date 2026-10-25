@@ -1,7 +1,8 @@
 """TNC-2 style command interpreter: what a dumb terminal or old packet BBS/terminal program expects.
 
-A serial-port user gets the TAPR TNC-2 experience: a ``cmd:`` prompt, ``MYCALL``, ``CONNECT``, converse and
-transparent modes, monitoring, ``UNPROTO``/``BEACON``, and ``KISS ON`` to hand the port over to a KISS host.
+A serial-port user gets the TAPR TNC-2 experience: a ``cmd:`` prompt, ``MYCALL``, ``CONNECT``, multiple AX.25
+streams, converse and transparent modes, monitoring, ``UNPROTO``/``BEACON``, and ``KISS ON`` to hand the port over
+to a KISS host. ``STREAM n`` selects a zero-based stream; Ctrl-\\ cycles among active streams in converse mode.
 Commands may be abbreviated as on the TNC-2 (``C`` for CONNECT, ``K`` for CONVERSE, ``MY`` for MYCALL ...).
 Ctrl-C returns from converse/transparent mode to command mode.
 
@@ -18,11 +19,12 @@ import time
 
 from . import kiss
 from .ax25 import Address, Ax25Error, Frame
-from .ax25_link import CONNECTED, DISCONNECTED, LinkManager, LinkParams
+from .ax25_link import CONNECTED, DISCONNECTED, Link, LinkManager, LinkParams
 
 log = logging.getLogger("hammodem.tnc2")
 
 CTRL_C = 0x03
+CTRL_STREAMSW = 0x1C
 BANNER = b"\r\nham-modem TNC-2 emulation\r\n"
 
 COMMAND, CONVERSE, TRANSPARENT, KISS_MODE = "command", "converse", "transparent", "kiss"
@@ -30,9 +32,10 @@ COMMAND, CONVERSE, TRANSPARENT, KISS_MODE = "command", "converse", "transparent"
 # name, shortest accepted abbreviation
 _COMMANDS = [
     ("BEACON", 1), ("BTEXT", 2), ("CONNECT", 1), ("CONOK", 4), ("CONVERSE", 4), ("DISCONNE", 1), ("DISPLAY", 4),
-    ("ECHO", 1), ("FRACK", 1), ("HELP", 1), ("K", 1), ("KISS", 4), ("MAXFRAME", 3), ("MCON", 3), ("MHEARD", 2),
+    ("ECHO", 1), ("FRACK", 1), ("HELP", 1), ("K", 1), ("KISS", 4), ("MAXFRAME", 3), ("MAXSTREAM", 4),
+    ("MCON", 3), ("MHEARD", 2),
     ("MONITOR", 1), ("MYCALL", 2), ("PACLEN", 1), ("PERSIST", 4), ("RESTART", 7), ("RETRY", 2), ("SLOTTIME", 2),
-    ("TRANS", 1), ("TXDELAY", 2), ("UNPROTO", 1), ("WRITE", 2), ("?", 1),
+    ("STREAM", 3), ("TRANS", 1), ("TXDELAY", 2), ("UNPROTO", 1), ("WRITE", 2), ("?", 1),
 ]
 
 
@@ -71,13 +74,44 @@ class Tnc2Terminal:
         self.mgr.on_connect = self._on_connect
         self.mgr.on_data = self._on_data
         self.mgr.on_disconnect = self._on_disconnect
-        self.mgr.accept_incoming = lambda lk: self.conok and self.link is None
-        self.link = None
+        self.mgr.accept_incoming = self._accept_incoming
+        self.max_streams = 4
+        self.current_stream = 0
+        self.streams: dict[int, Link] = {}
         self._awaiting_link = False
         self._kiss: kiss.Decoder | None = None
         self._nvram_path: str | None = None
         self._out(BANNER)
         self._prompt()
+
+    @property
+    def link(self) -> Link | None:
+        """The link selected by the terminal, retained as a compatibility shorthand."""
+        return self.streams.get(self.current_stream)
+
+    def _stream_for_link(self, link: Link) -> int | None:
+        return next((n for n, lk in self.streams.items() if lk is link), None)
+
+    def _free_stream(self) -> int | None:
+        return next((n for n in range(self.max_streams) if n not in self.streams), None)
+
+    def _accept_incoming(self, link: Link) -> bool:
+        return self.conok and (self._stream_for_link(link) is not None or self._free_stream() is not None)
+
+    def _stream_status(self, announce: bool = True) -> None:
+        link = self.link
+        peer = f"{link.name} {link.state.upper()}" if link else "DISCONNECTED"
+        if announce:
+            self._say(f"STREAM {self.current_stream}: {peer}")
+
+    def _next_stream(self, announce: bool = True) -> None:
+        active = sorted(n for n, link in self.streams.items() if link.state != DISCONNECTED)
+        if self.current_stream in active and len(active) > 1:
+            i = active.index(self.current_stream)
+            self.current_stream = active[(i + 1) % len(active)]
+        else:
+            self.current_stream = (self.current_stream + 1) % self.max_streams
+        self._stream_status(announce)
 
     # ---------------------------------------------------------------- output helpers
 
@@ -110,8 +144,8 @@ class Tnc2Terminal:
 
     def reset(self) -> None:
         """The port was closed (DTR drop): leave KISS, drop the connection quietly."""
-        if self.link is not None:
-            self.link.disconnect()
+        for link in list(self.streams.values()):
+            link.disconnect()
         self.mode, self._kiss = COMMAND, None
         self.line.clear()
 
@@ -151,6 +185,11 @@ class Tnc2Terminal:
                 else:
                     self._out(b"\r\n")
                     self._prompt()
+            elif b == CTRL_STREAMSW and self.mode == CONVERSE:
+                if self.line:
+                    self._send_data(bytes(self.line))
+                    self.line.clear()
+                self._next_stream()
             elif b in (0x08, 0x7F):
                 if self.line:
                     self.line.pop()
@@ -194,24 +233,40 @@ class Tnc2Terminal:
     # ---------------------------------------------------------------- link events
 
     def _on_connect(self, link, incoming: bool) -> None:
-        self.link = link
-        self._say(f"*** CONNECTED to {link.name}")
-        self.mode = CONVERSE
-        self.line.clear()
+        current = self.link
+        stream = self._stream_for_link(link)
+        if stream is None:
+            stream = self._free_stream()
+            if stream is None:
+                link.disconnect()
+                return
+            self.streams[stream] = link
+        if not incoming or current is None or current is link or current.state == DISCONNECTED:
+            self.current_stream = stream
+            self.mode = CONVERSE
+            self.line.clear()
+        self._say(f"*** CONNECTED to {link.name} on stream {stream}")
 
     def _on_data(self, link, data: bytes) -> None:
         if link is self.link:
             self._out(data.replace(b"\r", b"\r\n") if self.mode != TRANSPARENT else data)
+        elif self.mcon:
+            stream = self._stream_for_link(link)
+            self._out(f"[STREAM {stream}] ".encode() + data.replace(b"\r", b"\r\n"))
 
     def _on_disconnect(self, link, reason: str) -> None:
-        if link is not self.link and self.link is not None:
+        stream = self._stream_for_link(link)
+        if stream is None:
             return
-        self.link = None
+        del self.streams[stream]
         text = {"busy": f"*** {link.name} busy", "retry count exceeded": "*** retry count exceeded"}.get(reason)
-        if text:
-            self._say(text)
-        self._say("*** DISCONNECTED")
-        if self.mode != KISS_MODE:
+        if stream == self.current_stream:
+            if text:
+                self._say(text)
+            self._say("*** DISCONNECTED")
+        else:
+            self._say(text or f"*** {link.name} DISCONNECTED (stream {stream})")
+        if stream == self.current_stream and self.mode != KISS_MODE:
             self.mode = COMMAND
             self.line.clear()
             self._prompt()
@@ -263,7 +318,7 @@ class Tnc2Terminal:
         if not arg:
             self._show("MYCALL", self.mgr.mycall)
             return
-        if self.link is not None:
+        if self.streams:
             raise ValueError("not while connected")
         old, self.mgr.mycall = self.mgr.mycall, Address.parse(arg)
         self.mgr.links.clear()
@@ -275,11 +330,15 @@ class Tnc2Terminal:
             return
         if self.link is not None:
             raise ValueError("already connected")
+        if self.current_stream >= self.max_streams:
+            raise ValueError("select an enabled stream")
         if self.mgr.mycall.call == "NOCALL":
             self._out(b"?MYCALL not set\r\n")
             return
         call, via = self._parse_path(arg)
-        self.link = self.mgr.connect(str(call), [str(v) for v in via])
+        link = self.mgr.link(str(call), [str(v) for v in via])
+        self.streams[self.current_stream] = link
+        link.connect()
         self._awaiting_link = True
 
     def _cmd_disconne(self, arg: str) -> None:
@@ -363,8 +422,8 @@ class Tnc2Terminal:
     def _cmd_kiss(self, arg: str) -> None:
         if _onoff(arg) is not True:
             raise ValueError("KISS ON")
-        if self.link is not None:
-            self.link.disconnect()
+        for link in list(self.streams.values()):
+            link.disconnect()
         self._say("KISS ON (send FEND FF FEND to return)")
         self.mode, self._kiss = KISS_MODE, kiss.Decoder()
 
@@ -379,8 +438,36 @@ class Tnc2Terminal:
                             ("TXDELAY", round(ch.txdelay * 100)), ("PERSIST", ch.persist),
                             ("SLOTTIME", round(ch.slottime * 100)), ("FRACK", int(p.frack)), ("MAXFRAME", p.maxframe),
                             ("PACLEN", p.paclen), ("RETRY", p.retry), ("BTEXT", self.btext),
-                            ("BEACON", f"EVERY {int(self.beacon_every // 10)}")]:
+                            ("BEACON", f"EVERY {int(self.beacon_every // 10)}"),
+                            ("MAXSTREAM", self.max_streams), ("STREAM", self.current_stream)]:
             self._show(f"  {name:<9}", value)
+
+    def _cmd_stream(self, arg: str) -> None:
+        if not arg:
+            for stream in range(self.max_streams):
+                link = self.streams.get(stream)
+                state = f"{link.name} {link.state.upper()}" if link else "DISCONNECTED"
+                self._out(f"STREAM {stream}: {state}\r\n".encode("latin-1"))
+            return
+        stream = int(arg)
+        if not 0 <= stream < self.max_streams:
+            raise ValueError(f"0-{self.max_streams - 1}")
+        self.current_stream = stream
+        self._stream_status()
+
+    def _cmd_maxstream(self, arg: str) -> None:
+        if not arg:
+            self._show("MAXSTREAM", self.max_streams)
+            return
+        n = int(arg)
+        if not 1 <= n <= 10:
+            raise ValueError("1-10")
+        if any(stream >= n for stream in self.streams):
+            raise ValueError("disconnect streams above new maximum first")
+        old, self.max_streams = self.max_streams, n
+        self._show("MAXSTREAM was", old)
+        if self.current_stream >= n:
+            self.current_stream = 0
 
     def _cmd_write(self, arg: str) -> None:
         if not self._nvram_path:
@@ -390,8 +477,8 @@ class Tnc2Terminal:
         self._say(f"settings saved to {self._nvram_path}")
 
     def _cmd_restart(self, arg: str) -> None:
-        if self.link is not None:
-            self.link.disconnect()
+        for link in list(self.streams.values()):
+            link.disconnect()
         self._out(BANNER)
 
     def _cmd_help(self, arg: str) -> None:
@@ -419,6 +506,7 @@ class Tnc2Terminal:
             "maxframe": p.maxframe,
             "paclen": p.paclen,
             "retry": p.retry,
+            "max_streams": self.max_streams,
         }
         tmp = path + ".tmp"
         with open(tmp, "w") as f:
@@ -462,6 +550,10 @@ class Tnc2Terminal:
                 p.paclen = max(1, min(256, int(data["paclen"])))
             if "retry" in data:
                 p.retry = max(0, min(15, int(data["retry"])))
+            if "max_streams" in data:
+                self.max_streams = max(1, min(10, int(data["max_streams"])))
+                if self.current_stream >= self.max_streams:
+                    self.current_stream = 0
         except Exception as exc:
             log.warning("nvram: error applying %s: %s", path, exc)
 

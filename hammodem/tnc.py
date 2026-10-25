@@ -40,7 +40,8 @@ class KissEndpoint:
 
 class Tnc:
     def __init__(self, modem: str = "afsk1200", fs: int = 8000, clock=time.monotonic, fx25: int = 0,
-                 il2p: bool | None = None, **channel_args) -> None:
+                 il2p: bool | None = None, silence_erasure_dbfs: float = -65.0,
+                 silence_erasure_hold_ms: float = 80.0, **channel_args) -> None:
         mod, self.demod = modems.make(modem, fs)
         mod.fx25 = fx25                          # FX.25 check bytes on transmit; receive always accepts FX.25
         if il2p is not None:
@@ -50,6 +51,11 @@ class Tnc:
         self.modem = modem
         self.fs = fs
         self.clock = clock                       # protocol timers (AX.25, beacons); tests pass simulated time
+        self.silence_erasure_dbfs = silence_erasure_dbfs
+        self._silence_hold_samples = max(0, int(fs * silence_erasure_hold_ms / 1000))
+        self._rx_samples = 0
+        self._rx_active_until = 0
+        self.silence_erasure_blocks = 0
         self.channel = Channel(mod, fs, **channel_args)
         self.endpoints: list = []                # KissEndpoint / Tnc2Terminal: deliver(frame), feed(bytes)
         self.monitor = None                     # callable(direction, frame_bytes) for logging/TUI
@@ -82,7 +88,19 @@ class Tnc:
         return self.demod.dcd
 
     def audio_in(self, pcm: np.ndarray | bytes, erased: bool = False) -> list[bytes]:
+        samples = np.frombuffer(pcm, dtype="<i2") if isinstance(pcm, (bytes, bytearray, memoryview)) else np.asarray(pcm)
+        if self.silence_erasure_dbfs is not None and samples.size:
+            x = samples.astype(np.float64) / 32768.0
+            level_dbfs = 10 * np.log10(np.mean(x * x) + 1e-12)
+            if level_dbfs > self.silence_erasure_dbfs:
+                self._rx_active_until = self._rx_samples + len(samples) + self._silence_hold_samples
+            elif self._rx_samples < self._rx_active_until:
+                # Uplink RTP loss is mixed as ordinary silence by the bridge, so no RTP timestamp gap
+                # reaches this receiver. During a recently active burst, treat near-silence as erased audio.
+                erased = True
+                self.silence_erasure_blocks += 1
         frames = self.demod.feed(pcm, erased)
+        self._rx_samples += len(samples)
         for f in frames:
             self.heard += 1
             self._monitor("rx", f)

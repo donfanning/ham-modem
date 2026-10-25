@@ -6,7 +6,8 @@ import numpy as np
 
 from .pactor3 import (
     BURST_SAMPLES, CARRIER_FREQS, CS_REPLY_BITS, CS_SAMPLES, CYCLE_SAMPLES,
-    DATA_BYTES, FS, Pactor3Demodulator, Pactor3Modulator, dpsk_demodulate_soft,
+    DATA_BYTES, FS, Pactor3Demodulator, Pactor3MemArq, Pactor3Modulator,
+    dpsk_demodulate_soft, M_PER_LEVEL, DATA_SYMS, CARRIER_INDICES,
 )
 from .pactor_link import PactorLinkBase
 from .pactor_terminal import PactorTerminalBase
@@ -17,12 +18,33 @@ class Pactor3Link(PactorLinkBase):
                  on_text=None, on_event=None) -> None:
         self.mod = Pactor3Modulator(fs=fs, level=level)
         self.demod = Pactor3Demodulator(fs=fs, level=level)
+        self._mem = Pactor3MemArq(level=level)
         super().__init__(
             mycall, fs=fs, level=level, data_bytes=DATA_BYTES[level],
             burst_len=BURST_SAMPLES, control_len=CS_SAMPLES,
             cycle_len=max(CYCLE_SAMPLES, BURST_SAMPLES + CS_SAMPLES + fs // 10),
             max_retries=max_retries, on_text=on_text, on_event=on_event,
         )
+
+    def decode_data(self, audio: np.ndarray) -> dict | None:
+        res = self.demod.feed_burst(audio)
+        if self.state == "connected" and getattr(self, "role", None) == "irs":
+            try:
+                x = audio.astype(np.float64)
+                m = M_PER_LEVEL[self.level]
+                cidx = CARRIER_INDICES[self.level]
+                softs = [dpsk_demodulate_soft(x, m, CARRIER_FREQS[ci], DATA_SYMS, self.fs) for ci in cidx]
+                self._mem.add(softs)
+                combined = self._mem.try_decode()
+                if combined is not None:
+                    res = combined
+            except Exception:
+                pass
+        else:
+            self._mem.reset()
+        if res is not None:
+            self._mem.reset()
+        return res
 
     def cs_decode(self, audio: np.ndarray) -> int | None:
         soft = dpsk_demodulate_soft(audio.astype(np.float64), 2, CARRIER_FREQS[5],

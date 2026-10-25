@@ -117,15 +117,23 @@ class Runtime:
     def close(self) -> None:
         rtp = getattr(self.audio, "rtp", None)
         ch = self.tnc.channel
-        log.info("stats: heard %d frames (bad FCS %d, FX.25 repaired %d), sent %d frames in %d bursts, "
-                 "%d busy deferrals, %d collisions (%d frames dropped)%s",
+        log.info("stats: heard %d frames (bad FCS %d, FX.25 repaired %d, inferred silence erasure blocks %d), "
+                 "sent %d frames in %d bursts, %d busy deferrals, %d collisions (%d frames dropped)%s",
                  self.tnc.heard, self.tnc.demod.bad_fcs, getattr(self.tnc.demod, "fx25_corrected", 0),
-                 ch.frames_sent, ch.bursts, ch.deferrals, ch.collisions, ch.dropped,
-                 f"; rtp {rtp.stats}" if rtp is not None else "")
+                 self.tnc.silence_erasure_blocks, ch.frames_sent, ch.bursts, ch.deferrals, ch.collisions, ch.dropped,
+                 f"; rtp {rtp.stats}; tx-silenced blocks {getattr(self.audio, 'tx_silenced_blocks', 0)}"
+                 f"; tx-dropped blocks {getattr(self.audio, 'tx_dropped_blocks', 0)}"
+                 f"; tx-masker blocks {getattr(self.audio, 'tx_masker_blocks', 0)}"
+                 if rtp is not None else "")
         for s, _ in self.links:
             s.close()
         for srv in self.servers:
             srv.close()
+        if hasattr(self.audio, "rx_overflows"):
+            log.info("system audio stats: RX overflows %d, RX queue drops %d, TX underflows %d, "
+                     "TX queue drops %d, callback errors %d",
+                     self.audio.rx_overflows, self.audio.rx_queue_drops, self.audio.tx_underflows,
+                     self.audio.tx_queue_drops, self.audio.callback_errors)
         self.audio.close()
 
 
@@ -148,7 +156,7 @@ def main(argv: list[str] | None = None) -> None:
                     help="JSON file for TNC-2 settings persistence (loaded on start, saved with WRITE command)")
     ap.add_argument("--kiss-tcp", metavar="[HOST:]PORT", help="KISS-over-TCP server (Direwolf uses 8001)")
     ap.add_argument("--agw", metavar="[HOST:]PORT", help="AGWPE TCP API server (usually 8000)")
-    leg = ap.add_mutually_exclusive_group(required=True)
+    leg = ap.add_mutually_exclusive_group(required=False)
     leg.add_argument("--udp-audio", metavar="LPORT[:HOST:PORT]",
                      help="raw s16le PCM over UDP: listen on LPORT, send to HOST:PORT (or to whoever sends first)")
     leg.add_argument("--sip-dial", metavar="EXT@HOST[:PORT]",
@@ -157,6 +165,11 @@ def main(argv: list[str] | None = None) -> None:
     leg.add_argument("--iax-dial", metavar="EXT@HOST[:PORT]",
                      help="IAX2: call EXT through the PBX and keep the call up (G.711 mu-law; AFSK modes)")
     leg.add_argument("--iax-listen", metavar="HOST[:PORT]", help="IAX2: register with the PBX and answer calls")
+    ap.add_argument("--audio-in", metavar="DEVICE", help="system audio capture device index or name (use with --audio-out)")
+    ap.add_argument("--audio-out", metavar="DEVICE", help="system audio playback device index or name (use with --audio-in)")
+    ap.add_argument("--audio-backend", choices=("auto", "pulse", "portaudio"), default="auto",
+                    help="system audio backend (default: prefer PulseAudio/PipeWire, then PortAudio)")
+    ap.add_argument("--list-audio-devices", action="store_true", help="list system audio devices and exit")
     ap.add_argument("--udp-bind", default="0.0.0.0", metavar="ADDR", help="local address for --udp-audio")
     ap.add_argument("--iax-user", default=None,
                     help="IAX2 username (default: lowercase MYCALL without SSID; "
@@ -186,6 +199,12 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--audio-tap", metavar="HOST:PORT",
                     help="copy received audio as raw s16le UDP (e.g. to Direwolf: ADEVICE udp:PORT)")
     ap.add_argument("--sim-loss", type=float, default=0.0, help=argparse.SUPPRESS)   # lab: drop received RTP
+    ap.add_argument("--sim-tx-silence-every", type=int, default=0, help=argparse.SUPPRESS)
+    ap.add_argument("--sim-tx-drop-every", type=int, default=0, help=argparse.SUPPRESS)
+    ap.add_argument("--sim-tx-gain-db", type=float, default=0.0, help=argparse.SUPPRESS)
+    ap.add_argument("--sim-mask-tone-hz", type=float, default=0.0, help=argparse.SUPPRESS)
+    ap.add_argument("--sim-mask-gain-db", type=float, default=-30.0, help=argparse.SUPPRESS)
+    ap.add_argument("--sim-mask-wav", default=None, help=argparse.SUPPRESS)
     ap.add_argument("--text-pty", action="append", default=[], metavar="PATH",
                     help="AMTOR: text terminal on a pty symlinked at PATH (type, read; /help for commands)")
     ap.add_argument("--text-tcp", metavar="[HOST:]PORT", help="AMTOR: the same text terminal over TCP (telnet/nc)")
@@ -212,6 +231,16 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("-m", "--monitor", action="store_true", help="print frames heard and sent")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
+    if args.list_audio_devices:
+        from .audio.device import format_all_audio_devices  # noqa: PLC0415
+        print(format_all_audio_devices())
+        return
+    network_leg = any((args.udp_audio, args.sip_dial, args.sip_listen, args.iax_dial, args.iax_listen))
+    device_leg = args.audio_in is not None or args.audio_out is not None
+    if device_leg and (args.audio_in is None or args.audio_out is None):
+        ap.error("--audio-in and --audio-out must be provided together")
+    if device_leg == network_leg:
+        ap.error("select exactly one audio leg: a network option or both --audio-in and --audio-out")
     if args.rate is None:
         args.rate = default_rate(args.modem)
     if args.codec is None:
@@ -235,7 +264,16 @@ def main(argv: list[str] | None = None) -> None:
     if args.modem in TEXT_MODEMS and not (args.text_pty or args.text_tcp):
         ap.error(f"--modem {args.modem} needs --text-pty or --text-tcp")
 
-    if args.iax_dial or args.iax_listen:
+    if device_leg:
+        from .audio.device import AudioDeviceUnavailable, DeviceAudio, PulseAudio, pulse_available  # noqa: PLC0415
+        try:
+            backend = args.audio_backend
+            if backend == "auto":
+                backend = "pulse" if pulse_available() else "portaudio"
+            audio = (PulseAudio if backend == "pulse" else DeviceAudio)(args.audio_in, args.audio_out, args.rate)
+        except (AudioDeviceUnavailable, ValueError) as exc:
+            ap.error(str(exc))
+    elif args.iax_dial or args.iax_listen:
         if args.rate != 8000:
             ap.error("IAX2 legs carry G.711 mu-law (8 kHz): use an AFSK modem or a SIP L16 leg")
         from .audio.iax import IaxLeg  # noqa: PLC0415
@@ -255,7 +293,10 @@ def main(argv: list[str] | None = None) -> None:
         audio = SipLeg(dial=args.sip_dial, listen=args.sip_listen, codecs=codecs, local_ip=args.local_ip,
                        sip_port=args.sip_port or (5060 if args.sip_listen else 0), media_port=args.media_port,
                        user=args.sip_user, password=os.environ.get("HAM_MODEM_SIP_PASSWORD"),
-                       sim_loss=args.sim_loss)
+                       sim_loss=args.sim_loss, sim_tx_silence_every=args.sim_tx_silence_every,
+                       sim_tx_drop_every=args.sim_tx_drop_every, sim_tx_gain_db=args.sim_tx_gain_db,
+                       sim_mask_tone_hz=args.sim_mask_tone_hz, sim_mask_gain_db=args.sim_mask_gain_db,
+                       sim_mask_wav=args.sim_mask_wav)
     if args.modem == "ardop":
         from .ardop.arq import ArqStation  # noqa: PLC0415
         from .ardop.tnc import run as run_ardop  # noqa: PLC0415

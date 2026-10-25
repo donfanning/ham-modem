@@ -84,10 +84,11 @@ The audio clock is the RTP 20 ms tick. The TX thread pulls from the channel's sa
 - **`kiss.py`:** KISS framing and the command bytes 0x00–0x06 and 0xFF, with multi-port support (the port nibble selects the modem/channel).
 - **`channel.py`:** p-persistent CSMA using DCD from the demodulator; TXDELAY flags, TXTAIL and full-duplex flag.
 - **`tnc2.py`:** TNC-2 command subset:
-  - `MYCALL`, `CONNECT`, `DISCONNE`, `CONVERSE`/`K`, `TRANS`
+  - `MYCALL`, `CONNECT`, `DISCONNE`, `CONVERSE`/`K`, `TRANS`, `STREAM`, `MAXSTREAM`
   - `MONITOR`, `UNPROTO`, `BEACON`
   - `TXDELAY`, `FRACK`, `MAXFRAME`, `PACLEN`, `RETRY`
   - `DISPLAY`, `RESTART`, `KISS ON`
+  - Multiple logical links per terminal; Ctrl-\\ (ASCII 0x1C) switches active streams
 
   It needs **`ax25_link.py`**, the AX.25 v2.0 connected-mode state machine.
 - **`agw.py` (AGWPE TCP, port 8000) and `kiss_tcp.py` (port 8001).**
@@ -121,16 +122,21 @@ The audio clock is the RTP 20 ms tick. The TX thread pulls from the channel's sa
    - Profile again, and add Numba or Rust only if the budget is exceeded.
 7. **Later:** FX.25/IL2P FEC *(done)*, a P2P SIP direct-call mode *(done: `--sip-listen`)*, the TUI/dashboard, packaging (PyInstaller like El-Modem), and serialsim/com0com for real DCD lines. *(The last three are still open: see the roadmap below.)*
 
-## Status (2026-10-22)
+## Project status (2026-10-24)
 
-Phases 0–7 are done, and so is everything below; details are in the dated notes under `lab/`.
+Phases 0–14 have implementations; validation depth varies by feature. The later dated lab notes record the
+measurements and known limitations. The current validation summary is in [docs/TESTING_VALIDATION.md](TESTING_VALIDATION.md).
 
-| Area | Done |
+| Area | Implemented scope and status |
 |---|---|
 | Modems | AFSK 1200/300; G3RUH 9600/19200/38400; PAM-4 19.2k/57.6k; passband QAM 38.4k/51.2k |
 | Link layer | AX.25 v2.0 connected mode; FX.25 (Direwolf-compatible); IL2P (Direwolf 1.7-compatible); erasure-aware FX.25 decoding; `--repeat` time diversity; CSMA/CD for rooms |
+| Erasure receive handling | IL2P/FX.25 erasure propagation, tag/sync masking, and near-silence inference for bridge-mixed uplink loss ([synthetic regressions](../lab/ERASURE_RECOVERY_2026_10_24.md), [ConfBridge comparison](../lab/CONFBRIDGE_RELIABILITY_2026_10_24.md), [packet-drop masking trials](../lab/ERASURE_PACKET_DROP_2026_10_24.md), [speech and filtered network-loss trials](../lab/SPEECH_MASK_NETEM_2026_10_24.md)); broader speech variation and remote-path loss characterization remain open |
 | DTE interfaces | KISS (pty/tty/TCP), TNC-2 command mode, AGWPE |
+| TNC-2 command mode | JSON NVRAM via `--nvram` and `WRITE`; four streams by default, configurable up to ten with `MAXSTREAM`, selected by `STREAM` or Ctrl-\\; [multi-stream lab note](../lab/TNC2_MULTISTREAM_2026_10_24.md) |
 | Audio legs | SIP (PCMU/PCMA/L16 at 16 and 48 kHz, dial or listen, digest auth); IAX2 (µ-law, from El-Modem's binding); UDP raw PCM |
+| HF data modes | ARDOP, FreeDATA/codec2, PACTOR-I/II/III, AMTOR/SITOR, MIL-STD-188-110, STANAG 4285/5066; implementation and interoperability status varies |
+| Keyboard and image modes | RTTY, PSK, MFSK, Olivia/Contestia, DominoEX/THOR, JS8; FAX and SSTV tools |
 | Lab | Isolated Asterisk lab (`ham-modem-lab`, 172.31.73.0/24) with rooms 7300 (8 kHz), 7316 (16 kHz), 7348 (48 kHz) and echo 7399; ConfBridge harness; third-party test with Direwolf as a digipeater peer plus `kissutil` |
 
 ## Roadmap
@@ -190,42 +196,111 @@ Phases are ordered by value. The first is a prerequisite for every HF protocol a
     nibble-based varicode (DominoEX) and MFSK varicode + R=1/2 K=7 FEC + diagonal interleaver (Thor), 9 tests;
     JS8 done 2026-10-22: `--modem js8`, 8-FSK (174,87) LDPC with CRC-12, Costas sync, BP decoder,
     6.25 baud Normal mode at 8 kHz, 13 tests including -5 dB noisy channel)*
-15. **Reverse-engineered proprietary HF modes** (research). Method and constraints are below. Order:
-    1. **PACTOR-II/III**: highest demand (Winlink, maritime); SCS has published protocol descriptions for III, and the II waveform is reasonably documented.
-    2. **Clover-II/2000 (HAL)**: the waveform is well described in Ray Petit's DCC papers (pulsed four-tone, adaptive BPSK up to 16-level, Reed-Solomon) and the patents have expired. The ARQ handshake needs recordings of real links. Mostly historical value.
-    3. **PACTOR-IV**: less documented.
-    4. **VARA**: last. It is closed, changes often, and has no published spec.
-16. **AX.25 kernel apps and NET/ROM** *(pinned by the user, NET/ROM especially)*. The kernel stack cannot run isolated in a container: it shares the host kernel, and as far as we know it only works in the initial network namespace. Container-friendly options:
-    - a **userspace NET/ROM** layer (NODES routing, L3/L4 circuits, node commands; the default, as BPQ does it);
-    - a **TUN device** for IP over AX.25 (PID 0xCC);
-    - an **LD_PRELOAD shim** mapping AF_AX25 sockets onto AGWPE, for specific tools (`call`, `axcall`, `beacon`);
-    - a **VM** with its own kernel when the real stack is needed.
+15. **Experimental HF modes and interoperability.** Local implementations of PACTOR-II, PACTOR-III, and
+    Clover-II are present (`--modem pactor2|pactor3|clover2`; see [validation limits](TESTING_VALIDATION.md)).
+    The PACTOR-II/III Asterisk peer tests are not proof of interoperability with SCS hardware. Clover-II supports
+    QPSM/BPSM/PSM2D/FSM2D/PSM8/PSM16/P8A2/P16A4; its live link behavior needs further validation. `ham-image`
+    provides FAX/SSTV encode/decode and transport commands.
 
-    Before designing anything, ask the user which kernel-app and NET/ROM features to capture.
-17. **Smaller open items:**
-    - **Erasure handling:** erasure-aware IL2P decoding; an FX.25 tag search that tolerates erasures (losses that hit the 64-bit tag); handling loss on the station-to-bridge leg, which arrives as silence in the mix with no RTP gap.
-    - **TNC-2:** settings persistence (JSON "NVRAM", like El-Modem) and multiple streams.
-    - **IAX2 and SIP:** per-station IAX2 users so stations can call each other through the PBX; making Asterisk send 10 ms L16/48000 packets (20 ms packets are 1932 bytes and fragment); a QAM equaliser if a real network path adds filtering.
-    - **Performance:** vectorised G3RUH PLL (38400 bd is the costliest mode left).
-    - **Packaging and tooling:** packaging (PyInstaller), the TUI/dashboard, serialsim/com0com for real DCD lines, a connected-mode test against Direwolf through an AGW client.
+    **Open goals:**
+    1. Preserve reproducible local ARQ trials in `lab/` with command, date, settings, and results; test retry and
+       duplicate-frame handling under loss before describing the local links as reliable.
+    2. Seek authorized recordings or hardware access and document interop tests separately from local peer tests.
+    3. Consider PACTOR-IV or VARA only after their documentation, test vectors, and legal constraints are assessed.
+16. **AX.25 kernel apps and NET/ROM** are deferred; see the active goals below. Candidate approaches include userspace
+    NET/ROM, TUN over AX.25, an AGWPE shim, or a VM. Define the requested kernel-app and NET/ROM features before
+    designing this work.
 
 ### Reverse-engineering approach (phase 15)
 
 - **Clean room, black box.** Work from published papers and protocol descriptions, and from over-the-air recordings (e.g. sigidwiki, or links recorded with real HAL or SCS hardware). Do not disassemble vendor software or firmware, and do not distribute vendor code.
 - **Legal position.** Signals sent in the clear on amateur bands may be analysed. FCC §97.309 requires amateur digital codes to be publicly documented, and our implementation will be. Reverse engineering for interoperability is broadly protected (EU Software Directive Art. 6; US law is narrower). Check each vendor's licence terms (VARA's especially) in the user's jurisdiction before starting.
-- **Naming.** Do not use vendor trademarks as mode names ("PACTOR" is SCS's, "VARA" is EA5HVK's); describe compatibility instead.
-- **Prerequisites.** Real modems or link recordings are needed for the ARQ layers. Without them the waveform can be built, but handshake timing is guesswork. Open question for the user: is HAL/SCS hardware or recordings available?
+- **Naming.** In explanatory text, describe compatibility and identify the local modes as experimental. Existing
+  CLI aliases (`pactor2`, `pactor3`, `clover2`) are retained for discoverability; their names do not claim vendor
+  certification or interoperability.
+- **Prerequisites.** Real modems or link recordings are needed to establish hardware interoperability. Without
+  them, local peer tests can validate only the implementation's own framing and handshake.
 
-### Decisions (user, 2026-10-22)
+### Recorded decisions (2026-10-22)
 
 1. Order: channel simulator (8), then the small open modes (9), working up to ARDOP (10).
-2. No HAL/SCS hardware or recordings are available: for phase 15, search online for recordings (sigidwiki and
-   similar archives) and work from published papers.
-3. NET/ROM / kernel-app scope (16): deferred; ask when we get there.
+2. HAL/SCS hardware or recordings were unavailable then; use public papers and authorized recordings if found.
+3. NET/ROM / kernel-app scope (16): deferred until that work is selected.
+
+## Active goals and TODO
+
+Priorities below are ordered by value and dependency; they are open work, not completed status claims.
+
+1. **Reliability and test evidence:** deterministic PACTOR-II/III lost-ACK, retry-exhaustion, duplicate-frame, and
+   soft-combining regressions are covered ([retry report](../lab/ARQ_RELIABILITY_2026_10_24.md), [failure-path
+   report](../lab/ARQ_FAILURE_PATHS_2026_10_24.md)). Live retry, sender-side RTP drops, controlled third-talker
+   masking, speech masking, filtered Linux egress drops, and randomized offered-load matrices with 1%, 3%, and 5% RTP loss are recorded ([ConfBridge report](../lab/CONFBRIDGE_RELIABILITY_2026_10_24.md), [packet-drop report](../lab/ERASURE_PACKET_DROP_2026_10_24.md), [speech/netem report](../lab/SPEECH_MASK_NETEM_2026_10_24.md), [randomized schedule report](../lab/RANDOMIZED_SCHEDULE_2026_10_24.md), [randomized loss report](../lab/RANDOMIZED_LOSS_2026_10_24.md), [multi-rate report](../lab/RANDOMIZED_LOSS_RATES_2026_10_24.md)); more seeds, more speech samples, and remote-path loss characterization remain open. Retain dated results for packet-loss, keyboard, and image runs in `docs/TESTING_VALIDATION.md`.
+2. **TNC-2 usability:** JSON NVRAM persistence and configurable multi-stream links are implemented and covered by tests. Live PTY command-mode and two-peer chat checks passed; Direwolf `kissutil` packet exchange over KISS-TCP also passed ([interface report](../lab/TNC2_INTERFACES_2026_10_24.md)). LinBPQ 6.0.26.1 and JNOS 2.0q build as isolated containers and passed live bidirectional AX.25 chat checks ([container interop report](../lab/LINBPQ_JNOS_INTEROP_2026_10_24.md)). Both BBS applications accept live sessions; scheduled bidirectional FBB, private-mailbox readback, and JNOS spool retention across container recreation passed ([BBS check](../lab/BBS_INTEROP_2026_10_24.md), [FBB forwarding report](../lab/JNOS_FBB_FORWARD_2026_10_24.md)).
+3. **Audio legs and radio interface:** a full-duplex system audio leg with selectable capture/playback devices,
+   PulseAudio/PipeWire and PortAudio backends, and virtual-cable setup documentation is implemented
+   ([audio setup and validation status](AUDIO_DEVICES.md)). AFSK1200 and two-way ARDOP 500MAX ARQ passed through
+   temporary PulseAudio null-sink cross-connects ([dated loopback report](../lab/SYSTEM_AUDIO_LOOPBACK_2026_10_24.md));
+   physical radio mic/speaker, PTT, and RF-path checks remain open. Also investigate per-station IAX2 users,
+   10 ms L16/48000 packetization, and QAM equalization only when a real path demonstrates filtering.
+4. **Performance:** profile and vectorize the G3RUH 38400 PLL if it remains the primary DSP cost.
+5. **Packaging and tools:** PyInstaller packaging, TUI/dashboard, serialsim/com0com for DCD testing, and connected
+   mode interoperability against Direwolf through an AGW client.
+6. **NET/ROM and kernel applications (deferred):** before design, ask which kernel-app and NET/ROM features are in
+   scope. Candidate approaches are userspace NET/ROM, TUN over AX.25, an AGWPE shim, or a VM.
+
+## Exploration TODO
+
+- **PSK31 multi-channel conversational BBS access:** explore using separate PSK31 audio-frequency slots within one
+  transceiver passband for independent operator or machine conversations with a central service. Keep the standard
+  PSK31 waveform and investigate an addressed, human-readable session layer with callsign routing, message retrieval,
+  acknowledgements/retries, and a gateway to LinBPQ/JNOS or another message store. The current PSK31 path uses one
+  center frequency per modem instance ([`psk31.py`](../hammodem/keyboard/psk31.py)); multi-channel receive, combined
+  transmit audio, per-slot session routing, and channel/power limits need exploration before choosing an implementation.
+  This is a design idea, not a committed feature or direct AX.25-over-PSK31 interoperability claim.
+- **Higher-rate data through stock FM HT audio:** explore whether ordinary, unmodified voice HTs can reliably
+  exceed the 1200 bit/s AX.25 AFSK baseline using only their normal mic/speaker audio connections. Assume radio
+  models and audio responses vary, open squelch during data, and keep deviation and occupied bandwidth compliant.
+  Treat adaptive audio-channel probing/equalization and candidate voice-band waveforms (for example differential
+  PSK or adaptive OFDM) as hypotheses to evaluate, not selected designs. Use Shannon-Hartley only as a conditional
+  upper bound: for an illustrative 2.4 kHz usable audio channel, ideal AWGN capacity is about 8.3, 16.0, and
+  23.9 kbit/s at 10, 20, and 30 dB SNR respectively; these are not predicted HT rates. A few kbit/s of payload
+  is an unvalidated engineering target. First build a reproducible bench matrix across representative stock
+  radios: measure TX/RX audio response, calibrate audio level and deviation without internal modification, sweep
+  modem profiles and SNR, record BER/FER and delivered payload throughput including framing/FEC/ACK overhead, and
+  establish a common robust fallback. For shared operation, evaluate listen-before-talk with randomized backoff
+  and ACK-based recovery (CSMA/CA); ordinary half-duplex HTs cannot reliably perform in-transmission collision
+  detection (CSMA/CD). Check each waveform's emission authorization and applicable symbol-rate/bandwidth rules
+  before on-air trials. References: [MIT digital communications notes](https://ocw.mit.edu/courses/6-451-principles-of-digital-communication-ii-spring-2005/bb895c1dee9ce0b39d6846e0aa984981_MIT6_451S05_FullLecNotes.pdf),
+  [ITU-T V.34](https://www.itu.int/rec/T-REC-V.34), and [47 CFR §97.307](https://www.govinfo.gov/content/pkg/CFR-2025-title47-vol5/pdf/CFR-2025-title47-vol5-part97.pdf).
+- **Mode-aware higher throughput on stock HF SSB:** investigate achievable application throughput through unmodified
+  SSB transceivers' normal audio/PTT connections, accounting for existing HF modes' adaptation to fading,
+  multipath, noise, and interference (FEC, interleaving/equalization, compression, ARQ and rate/bandwidth
+  adaptation). Published context: ITU-R reports 2.4–4.8 kbit/s as usual for adaptive long-haul skywave in a 3 kHz
+  channel and up to 9.6 kbit/s on easier channels; ARDOP's public specification adapts among 200–2000 Hz modes;
+  ARRL documents PACTOR-III up to 2.7 kbit/s uncompressed (up to 5.2 kbit/s with compression); SCS advertises
+  PACTOR-IV up to 10.5 kbit/s net in 2.4 kHz. These are mode-specific published figures with different
+  assumptions, not guarantees or directly comparable measurements. Compare open, implementable modes separately
+  from proprietary modem capabilities. Our ARDOP waveform/ARQ work has simulated-channel and software-peer
+  evidence only, not over-the-air validation ([PHY report](../lab/ARDOP_PHY_2026_10_22.md), [ARQ report](../lab/ARDOP_ARQ_2026_10_22.md)).
+  Build a reproducible channel matrix (clean, CCIR moderate/poor, frequency-selective fading, Doppler, impulsive
+  noise and interference); record gross rate, net error-free payload rate, retries, latency, and time spent in
+  each gear. Validate audio levels/passband across stock rigs, preserve a robust low-rate fallback, and compare
+  against 1200-baud baseline. For perspective only, the ideal 2.4 kHz AWGN Shannon capacities are 8.3/16.0/23.9
+  kbit/s at 10/20/30 dB SNR; HF fading channels violate that simple model, so do not treat these as achievable
+  targets. Check current band/segment emission and bandwidth rules (including the 2.8 kHz rule on applicable HF
+  segments) before on-air trials. References: [ITU-R Report F.2062](https://www.itu.int/dms_pub/itu-r/opb/rep/R-REP-F.2062-2005-PDF-E.pdf),
+  [ARDOP specification](https://winlink.org/sites/default/files/downloads/_ardop_specification.pdf),
+  [PACTOR-III technical description](https://www.arrl.org/pactor-iii), [SCS PACTOR](https://www.scs-pactor.com/en/),
+  and [47 CFR §97.307](https://www.govinfo.gov/content/pkg/CFR-2025-title47-vol5/pdf/CFR-2025-title47-vol5-part97.pdf).
+- **HF ALE (Automatic Link Establishment):** explore a standards-based or clearly documented ALE layer for
+  scanning/selecting prearranged HF channels, calling and answering stations by callsign, probing link quality,
+  and handing an established link to an appropriate data mode. Compare scope and interoperability requirements
+  against MIL-STD-188-141; distinguish ALE link setup/channel selection from ARQ and payload modem functions.
+  Identify a public specification, compatible peers/test vectors, channel dwell and latency tradeoffs, and the
+  applicable Part 97 emission, identification, and frequency-use constraints before choosing an implementation.
+  This is exploratory only; no ALE compatibility or on-air suitability is claimed.
 
 ## Verification
-- `python -m unittest discover tests` covers the codecs (KISS, AX.25, HDLC/NRZI/FCS), modem round-trips with impairments, and the CSMA logic.
-- WAV benchmark: `tools/decode_wav.py wa8lmf_track2.wav` reports the frame count. Run Direwolf on the same file for a side-by-side comparison.
-- Direwolf interop in both directions through WAV and stdin piping.
-- Lab end-to-end: `cd lab/asterisk && docker compose up`, three `hammodem` containers in ConfBridge plus a Direwolf monitor, then a scripted `kissattach` + `beacon` + `axcall` session. Report a pass rate per loss level.
-- Real-time margin: log per-block DSP time and confirm there are no RTP send-deadline misses over 10 minutes.
+
+Use [docs/TESTING_VALIDATION.md](TESTING_VALIDATION.md) for the repeatable unit-test command, recorded measurements,
+and evidence limits. Add dated lab notes for new interoperability or performance results.

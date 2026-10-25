@@ -1,0 +1,14 @@
+# Lab-only JNOS 2.0q configuration. KISS-TCP is bridged to /tmp/tnc by socat.
+hostname n0jno
+ip address 127.0.0.1
+ax25 mycall N0JNO-3
+ax25 bbscall N0JNO-4
+attach asy ttyTNC - ax25 vhf 4096 256 9600
+mbox password SET_A_LOCAL_LAB_PASSWORD
+mbox haddress n0jno.#lab.noam
+mbox fbb 2
+start ax25
+start forward
+mbox timer 30
+start smtp
+smtp timer 30

@@ -35,6 +35,32 @@ def ui(src, i):
 
 
 class TncTest(unittest.TestCase):
+    def test_silent_mixed_uplink_gap_is_marked_as_erased(self):
+        class DemodSpy:
+            dcd = False
+            bad_fcs = 0
+            fx25_corrected = 0
+
+            def __init__(self):
+                self.erased = []
+
+            def feed(self, pcm, erased=False):
+                self.erased.append(erased)
+                return []
+
+        t = Tnc("afsk1200", 8000, silence_erasure_dbfs=-50, silence_erasure_hold_ms=20)
+        spy = DemodSpy()
+        t.demod = spy
+        signal = np.full(1600, 3000, np.int16)
+        silence = np.zeros(1600, np.int16)
+
+        t.audio_in(signal)
+        t.audio_in(silence)  # station-to-bridge loss is mixed as silence, with no RTP gap marker
+        t.audio_in(silence)  # beyond the active-burst hangover
+
+        self.assertEqual(spy.erased, [False, True, False])
+        self.assertEqual(t.silence_erasure_blocks, 1)
+
     def test_kiss_in_audio_out_kiss_out(self):
         a, b = Station(1), Station(2)
         frame = ui("N0CALL", 0)

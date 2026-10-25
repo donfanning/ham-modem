@@ -74,6 +74,26 @@ class RtpTest(unittest.TestCase):
         self.assertEqual(wire.sent[0][12:14], (0).to_bytes(2, "big"))
         np.testing.assert_array_equal(b.receive(wire.sent[0], ("10.0.0.1", 4000))[0], x)
 
+    def test_sender_drop_advances_rtp_sequence_and_timestamp(self):
+        a, wire, b = self.pair()
+        block = np.full(160, 1000, np.int16)
+        a.send(block)
+        a.send(block, drop=True)
+        a.send(block)
+
+        self.assertEqual(len(wire.sent), 2)
+        seq0 = int.from_bytes(wire.sent[0][2:4], "big")
+        seq2 = int.from_bytes(wire.sent[1][2:4], "big")
+        ts0 = int.from_bytes(wire.sent[0][4:8], "big")
+        ts2 = int.from_bytes(wire.sent[1][4:8], "big")
+        self.assertEqual((seq2 - seq0) & 0xFFFF, 2)
+        self.assertEqual((ts2 - ts0) & 0xFFFFFFFF, 320)
+        self.assertEqual(a.stats["simulated_dropped"], 1)
+        received = b.receive(wire.sent[0], ("10.0.0.1", 4000))
+        received += b.receive(wire.sent[1], ("10.0.0.1", 4000))
+        self.assertEqual(len(received), 3)  # first, one RTP-gap concealment block, then last
+        self.assertEqual(b.stats["concealed_samples"], 160)
+
 
 class SipLoopbackTest(unittest.TestCase):
     """Two legs on localhost: one listens, the other dials it directly (point-to-point link)."""
@@ -102,6 +122,155 @@ class SipLoopbackTest(unittest.TestCase):
         self.assertEqual(b.state, "idle")
         a.close()
         b.close()
+
+    def test_lab_tx_silence_preserves_rtp_send_with_zero_payload_audio(self):
+        class CaptureRtp:
+            def __init__(self):
+                self.blocks = []
+                self.drops = []
+
+            def send(self, pcm, *, drop=False):
+                self.blocks.append(np.array(pcm, copy=True))
+                self.drops.append(drop)
+
+        leg = SipLeg.__new__(SipLeg)
+        leg.rtp = CaptureRtp()
+        leg.state = "up"
+        leg.rate = 8000
+        leg.sim_mask_tone_hz = 0.0
+        leg.sim_tx_gain = 1.0
+        leg.sim_tx_silence_every = 2
+        leg.sim_tx_drop_every = 0
+        leg._tx_active_blocks = 0
+        leg.tx_silenced_blocks = 0
+        tone = np.full(160, 1200, np.int16)
+
+        leg.send(tone)
+        leg.send(np.zeros(160, np.int16))  # idle silence does not affect the active-block cadence
+        leg.send(tone)
+
+        self.assertEqual(len(leg.rtp.blocks), 3)
+        np.testing.assert_array_equal(leg.rtp.blocks[0], tone)
+        np.testing.assert_array_equal(leg.rtp.blocks[1], np.zeros(160, np.int16))
+        np.testing.assert_array_equal(leg.rtp.blocks[2], np.zeros(160, np.int16))
+        self.assertEqual(leg.tx_silenced_blocks, 1)
+
+    def test_lab_tx_drop_omits_selected_active_rtp_packets(self):
+        class CaptureRtp:
+            def __init__(self):
+                self.blocks = []
+                self.drops = []
+
+            def send(self, pcm, *, drop=False):
+                self.blocks.append(np.array(pcm, copy=True))
+                self.drops.append(drop)
+
+        leg = SipLeg.__new__(SipLeg)
+        leg.rtp = CaptureRtp()
+        leg.state = "up"
+        leg.rate = 8000
+        leg.sim_mask_tone_hz = 0.0
+        leg.sim_tx_gain = 1.0
+        leg.sim_tx_silence_every = 0
+        leg.sim_tx_drop_every = 2
+        leg._tx_active_blocks = 0
+        leg.tx_silenced_blocks = 0
+        leg.tx_dropped_blocks = 0
+        tone = np.full(160, 1200, np.int16)
+
+        for _ in range(3):
+            leg.send(tone)
+
+        self.assertEqual(leg.rtp.drops, [False, True, False])
+        self.assertEqual(leg.tx_dropped_blocks, 1)
+
+    def test_lab_tx_gain_scales_audio_before_rtp(self):
+        class CaptureRtp:
+            def __init__(self):
+                self.blocks = []
+
+            def send(self, pcm, *, drop=False):
+                self.blocks.append(np.array(pcm, copy=True))
+
+        leg = SipLeg.__new__(SipLeg)
+        leg.rtp = CaptureRtp()
+        leg.state = "up"
+        leg.rate = 8000
+        leg.sim_mask_tone_hz = 0.0
+        leg.sim_tx_gain = 0.1
+        leg.sim_tx_silence_every = 0
+        leg.sim_tx_drop_every = 0
+        leg._tx_active_blocks = 0
+        leg.tx_silenced_blocks = 0
+        leg.tx_dropped_blocks = 0
+        leg.send(np.full(160, 10000, np.int16))
+
+        np.testing.assert_array_equal(leg.rtp.blocks[0], np.full(160, 1000, np.int16))
+
+    def test_lab_mask_tone_replaces_only_silent_blocks(self):
+        class CaptureRtp:
+            def __init__(self):
+                self.blocks = []
+
+            def send(self, pcm, *, drop=False):
+                self.blocks.append(np.array(pcm, copy=True))
+
+        leg = SipLeg.__new__(SipLeg)
+        leg.rtp = CaptureRtp()
+        leg.state = "up"
+        leg.rate = 8000
+        leg.sim_mask_tone_hz = 3000.0
+        leg.sim_mask_amplitude = 1000.0
+        leg._mask_phase = 0
+        leg.tx_masker_blocks = 0
+        leg.sim_tx_gain = 1.0
+        leg.sim_tx_silence_every = 0
+        leg.sim_tx_drop_every = 0
+        leg._tx_active_blocks = 0
+        leg.tx_silenced_blocks = 0
+        leg.tx_dropped_blocks = 0
+
+        leg.send(np.zeros(160, np.int16))
+        data = np.full(160, 1234, np.int16)
+        leg.send(data)
+
+        self.assertGreater(np.sqrt(np.mean(leg.rtp.blocks[0].astype(float) ** 2)), 500)
+        np.testing.assert_array_equal(leg.rtp.blocks[1], data)
+        self.assertEqual(leg.tx_masker_blocks, 1)
+
+    def test_lab_mask_wav_loops_and_scales_only_silent_blocks(self):
+        class CaptureRtp:
+            def __init__(self):
+                self.blocks = []
+
+            def send(self, pcm, *, drop=False):
+                self.blocks.append(np.array(pcm, copy=True))
+
+        leg = SipLeg.__new__(SipLeg)
+        leg.rtp = CaptureRtp()
+        leg.state = "up"
+        leg.rate = 8000
+        leg.sim_mask_tone_hz = 0.0
+        leg._mask_audio = np.array([1000, 2000, 3000, 4000], np.int16)
+        leg._mask_audio_offset = 0
+        leg.sim_mask_gain = 0.5
+        leg.tx_masker_blocks = 0
+        leg.sim_tx_gain = 1.0
+        leg.sim_tx_silence_every = 0
+        leg.sim_tx_drop_every = 0
+        leg._tx_active_blocks = 0
+        leg.tx_silenced_blocks = 0
+        leg.tx_dropped_blocks = 0
+
+        leg.send(np.zeros(3, np.int16))
+        speech = np.full(3, 1234, np.int16)
+        leg.send(speech)
+        leg.send(np.zeros(3, np.int16))
+
+        np.testing.assert_array_equal(leg.rtp.blocks[0], [500, 1000, 1500])
+        np.testing.assert_array_equal(leg.rtp.blocks[1], speech)
+        np.testing.assert_array_equal(leg.rtp.blocks[2], [2000, 500, 1000])
+        self.assertEqual(leg.tx_masker_blocks, 2)
 
 
 if __name__ == "__main__":

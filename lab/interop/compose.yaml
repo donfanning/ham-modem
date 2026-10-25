@@ -1,0 +1,32 @@
+services:
+  linbpq:
+    build:
+      context: ./linbpq
+    image: ham-modem-linbpq:6.0.26.1
+    container_name: ham-lab-linbpq
+    restart: "no"
+    cap_add: [NET_RAW, NET_ADMIN]
+    networks: [radio]
+
+  jnos:
+    build:
+      context: ./jnos
+    image: ham-modem-jnos:2.0q
+    container_name: ham-lab-jnos
+    restart: "no"
+    stdin_open: true
+    tty: true
+    networks: [radio]
+    volumes:
+      - jnos-spool:/opt/jnos/spool
+    environment:
+      KISS_HOST: 172.31.73.1
+      KISS_PORT: 18002
+
+volumes:
+  jnos-spool:
+
+networks:
+  radio:
+    external: true
+    name: ham-modem-lab

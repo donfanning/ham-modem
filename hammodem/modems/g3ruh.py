@@ -276,10 +276,11 @@ class G3ruhDemodulator:
 
         self.prev, self.phase, self.quality, self.run, self.desc_state = (
             prev, phase, max(-1.0, min(1.0, quality)), run, ds)
+        raw_era = np.asarray(flags, bool) if flags else None
         if flags:
             ext, self._since = extend_bits(np.array(flags), self._since, ERASE_TAIL)
         else:
             ext, self._since = None, self._since + len(bits)
         out += self.fx25.feed_bits(bits, ext)
-        out += self.il2p.feed_bits(raw)
+        out += self.il2p.feed_bits(raw, raw_era)
         return _dedupe(self, out, len(bits))

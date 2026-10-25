@@ -254,11 +254,12 @@ class AfskDemodulator:
                 if frame is not None:
                     self._emit(frame, base + i, out)
         s.prev, s.phase, s.quality, s.run = prev, phase, max(-1.0, min(1.0, quality)), run
+        raw_era = np.asarray(flags, bool) if flags else None
         if flags:
             ext, s.since = extend_bits(np.array(flags), s.since, 1)
         else:
             ext, s.since = None, s.since + len(bits)
         for frame in s.fx25.feed_bits(bits, ext):
             self._emit(frame, base + len(levels), out)
-        for frame in s.il2p.feed_bits(raw):
+        for frame in s.il2p.feed_bits(raw, raw_era):
             self._emit(frame, base + len(levels), out)

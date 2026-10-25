@@ -1,84 +1,102 @@
 # Ham-Modem
 
-A software packet-radio TNC whose "radio" is a VoIP call. Stations dial an Asterisk ConfBridge room (the shared
-channel, like a simplex frequency) or call each other directly over SIP/IAX2, and exchange AX.25 packets as
-audio — Bell 202 1200 bd AFSK, 300 bd HF AFSK, and later 9600 bd G3RUH. Legacy packet software talks to it as if
-it were a hardware TNC: KISS over a serial port or pty, TNC-2 command mode, KISS-over-TCP and AGWPE.
+**Packet radio and digital modes, with VoIP audio as the channel.**
 
-Sibling of [El-Modem](https://github.com/donfanning/el-modem) (Hayes dial-up modem over VoIP).
-Design, research notes and phases: [docs/PLAN.md](docs/PLAN.md).
+I’m Don Fanning (KL7EET), creator of [El-Modem](https://github.com/donfanning/el-modem), an experimental Hayes and
+V-series software modem over VoIP. Ham-Modem is its packet-radio companion: it provides a software TNC and digital
+modem modes that can share an Asterisk conference room or connect directly over SIP. The projects share some
+transport and test-lab foundations; see [NOTICE](NOTICE) for code provenance and attribution.
 
-## Status
+Ham-Modem is an active research project. Some features have offline regression tests, some have live VoIP or
+Direwolf interoperability results, and experimental HF modes have not been validated against commercial radio
+equipment. The [validation guide](docs/TESTING_VALIDATION.md) spells out what each result establishes.
 
-| Piece | State |
-|---|---|
-| HDLC / NRZI / FCS, AX.25 frame codec, KISS codec | done, unit-tested |
-| AFSK 1200 / 300 modulator + demodulator (slicer bank, PLL, DCD) | done; interoperates with Direwolf both ways ([lab note](lab/AFSK_BASELINE_2026_10_21.md)) |
-| CSMA channel (p-persist, DCD from timing quality + in-band energy), KISS pty / tty / TCP | done; live test through `tools/audio_hub.py` with Direwolf monitoring |
-| AX.25 v2.0 connected mode (mod 8, REJ/poll recovery, digipeater paths), TNC-2 command mode (`--tnc2-pty`), AGWPE server (`--agw`) | done; live TNC-2 <-> AGWPE session through the ConfBridge ([lab note](lab/CONNECTED_MODE_2026_10_21.md)) |
-| SIP (dial / listen, digest), RTP (PCMU/PCMA/L16, loss concealment), Asterisk ConfBridge lab | **milestone 1 reached**: 3 stations in a ConfBridge, Direwolf monitoring ([lab note](lab/CONFBRIDGE_MILESTONE1_2026_10_21.md)) |
-| IAX2 legs (`--iax-dial EXT@PBX`, `--iax-listen PBX`; G.711, AFSK modes) | done; mixed IAX2 + SIP room 48/48 ([lab note](lab/IAX2_2026_10_21.md)) |
-| G3RUH 9600 bd (`--modem g3ruh9600`, L16/16 kHz legs, room 7316) | done; Direwolf interop both ways, 48/48 through the 16 kHz ConfBridge ([lab note](lab/G3RUH_9600_2026_10_21.md)) |
-| G3RUH 19200 / 38400 bd (`--modem g3ruh19200` / `g3ruh38400`, L16/48 kHz legs, room 7348) | done; 19200 interoperates with Direwolf; live 48/48 in the 48 kHz room with CSMA/CD ([lab note](lab/G3RUH_FAST_2026_10_21.md)) |
-| PAM-4 57.6 kbit/s VoIP-native mode (`--modem pam57600`, 48 kHz legs; `pam19200` on 16 kHz) | done; live 48/48 in room 7348, 96.7% at 3% RTP loss vs 58% for AFSK 1200 ([lab note](lab/PAM4_57600_2026_10_21.md)) |
-| FX.25 FEC (`--fx25 16/32/64`; receive always on), Direwolf-compatible | done; interop both ways under damage; 1200 bd at 3% loss: 50% -> 96.7% ([lab note](lab/FX25_2026_10_21.md)) |
-| Loss resilience: erasure-aware FX.25 decoding (RTP concealment -> RS erasures) and `--repeat N` time diversity | done; 9600 FX.25/32 at 3% loss 55 -> 59/60, 57.6k at 5% loss 85% -> 100% ([lab note](lab/LOSS_RESILIENCE_2026_10_21.md)) |
-| IL2P (`--il2p on|max`; receive always on for AFSK/G3RUH) | done; interoperates with Direwolf 1.7 both ways incl. RS repair; for loss, prefer FX.25 ([lab note](lab/IL2P_2026_10_21.md)) |
-| Passband QAM 38.4k / 51.2k on 16 kHz legs (`--modem qam38400` / `qam51200`, room 7316) | done; live 48/48 in the 16 kHz room ([lab note](lab/QAM_2026_10_21.md)) |
-| Third-party software: Direwolf 1.7 as a live digipeater/beacon peer + Direwolf `kissutil` on our KISS-TCP, all in lab-network containers (`lab/realapps_test.sh`) | passes ([lab note](lab/REALAPPS_2026_10_22.md)) |
-| HF channel simulator (Watterson/CCIR 520; `tools/hf_channel.py`, `audio_hub.py --hf`, `tools/hf_bench.py`) | done; validated; baseline for HF modes ([lab note](lab/HF_CHANNEL_2026_10_22.md)) |
-| Direwolf-compatible 2400 QPSK / 4800 8PSK (`--modem psk2400` / `psk4800`, G.711 legs), IL2P at 300 bd | done; Direwolf interop both ways ([lab note](lab/PSK_IL2P300_2026_10_22.md)) |
-| CSMA/CD for rooms (`--collision-detect`) | done, opt-in |
+## What’s inside
 
-## Try it
+- **Packet TNC:** AX.25 connected and UI frames, KISS over pty/serial/TCP, AGWPE, and TNC-2 command mode. TNC-2
+  supports multiple simultaneous links, configurable `MAXSTREAM`, and JSON settings persistence with `--nvram`.
+- **VoIP radio channel:** SIP/RTP with PCMU, PCMA, and L16 audio; IAX2 with G.711; Asterisk ConfBridge for a shared
+  channel; and direct SIP calls for point-to-point links.
+- **System audio:** full-duplex capture/playback through PortAudio or PulseAudio/PipeWire devices, including
+  virtual audio cables for connecting modem audio to a radio's normal mic/speaker jacks. See [system audio setup](docs/AUDIO_DEVICES.md).
+- **Packet waveforms:** AFSK 300/1200 baud, G3RUH 9600/19200/38400 baud, Direwolf-compatible 2400 QPSK and 4800
+  8PSK, passband QAM at 38.4/51.2 kbit/s, and VoIP-native PAM-4 at 19.2/57.6 kbit/s.
+- **Link resilience:** FX.25 and IL2P FEC, AX.25 retry/recovery, `--repeat` time diversity, CSMA/CD for shared rooms,
+  and receive-side erasure handling.
+- **Experimental digital modes:** PACTOR-II/III, Clover-II, ARDOP, FreeDATA/Codec2, keyboard modes, and FAX/SSTV
+  image tools. Their implementation and test depth vary.
 
-Through a real Asterisk conference room (the lab PBX lives on its own Docker network, 172.31.73.10, and binds nothing on the host):
+## Validation highlights
+
+- **660 unit tests passed** on 2026-10-24. Run the suite locally with the command below.
+- **Direwolf interoperability** is documented for AFSK, G3RUH, PSK, FX.25, and IL2P in their dated lab reports.
+- **Live packet-loss trial:** under a filtered 3% station-to-PBX RTP drop, FX.25/32 delivered 10/10 frames in both
+  repeats; without FEC, delivery was 5/10 and 7/10. The test used one Asterisk/PCMU lab path, so it is a measured
+  result for that setup rather than a general link rating.
+- **Experimental HF modes:** local peer tests do not establish interoperability with SCS or HAL equipment.
+
+Browse [dated lab reports](lab/) for configurations, outcomes, raw station logs, and limits. The [project plan](docs/PLAN.md)
+tracks remaining work.
+
+## Install and run
+
+Python 3.11 or newer is required. From the repository root:
+
+```sh
+python3 -m venv .venv
+.venv/bin/pip install -e .
+.venv/bin/python -m unittest discover -s tests -t .
+```
+
+### Join the local Asterisk lab
+
+Start the isolated PBX, then launch a station with KISS-TCP:
 
 ```sh
 (cd lab/asterisk && docker compose up -d)
-export PYTHONPATH=$PWD
-.venv/bin/python -m hammodem.main --sip-dial 7300@172.31.73.10 --kiss-tcp 8001 -m &
-.venv/bin/python -m hammodem.main --sip-dial 7300@172.31.73.10 --kiss-pty ~/.ham-modem1 -m &
-.venv/bin/python lab/confbridge_test.py --stations 3 --frames 10 [--loss 0.03]   # delivery matrix
+.venv/bin/python -m hammodem.main --sip-dial 7300@172.31.73.10 --kiss-tcp 8001 --modem afsk1200
 ```
 
-A dumb-terminal user: `--tnc2-pty ~/.ham-tnc2 --mycall N0CALL`, then `minicom -D ~/.ham-tnc2` / `screen ~/.ham-tnc2`
-and type `C K1ABC` at the `cmd:` prompt. AGWPE clients: `--agw 8000`.
-
-9600 bd: `--modem g3ruh9600 --sip-dial 7316@172.31.73.10` (16 kHz room; 8 kHz G.711 legs are refused).
-19200/38400 bd: `--modem g3ruh19200 --sip-dial 7348@172.31.73.10` (48 kHz room, L16/48000).
-57.6 kbit/s: `--modem pam57600 --sip-dial 7348@172.31.73.10` (VoIP-only waveform; same KISS/TNC-2/AGW interfaces).
-51.2 kbit/s on ordinary 16 kHz legs: `--modem qam51200 --sip-dial 7316@172.31.73.10 --txdelay 20`.
-
-Point-to-point (no PBX): one station runs `--sip-listen --sip-port 5070`, the other `--sip-dial x@HOST:5070`.
-
-
-Two TNCs on a local stand-in for a conference bridge (raw PCM over UDP), Direwolf-compatible:
+Run a multi-station delivery trial with:
 
 ```sh
-export PYTHONPATH=$PWD
-.venv/bin/python tools/audio_hub.py --port 7300 &                       # the "frequency"
-.venv/bin/python -m hammodem.main --udp-audio 7401:127.0.0.1:7300 --kiss-tcp 8001 -m &
-.venv/bin/python -m hammodem.main --udp-audio 7402:127.0.0.1:7300 --kiss-pty ~/.ham-modem1 -m &
-.venv/bin/python tools/kiss_tool.py --dev ~/.ham-modem1 listen &
-.venv/bin/python tools/kiss_tool.py --tcp 127.0.0.1:8001 send N0CALL APRS ">hello"
+.venv/bin/python lab/confbridge_test.py --stations 3 --frames 10
 ```
 
-`kissattach ~/.ham-modem1 radio` (Linux AX.25 tools) works on the pty the same way. Offline:
+The repeatable impairment and results workflows are recorded in [TESTING_VALIDATION.md](docs/TESTING_VALIDATION.md).
 
-IAX2 needs the native binding (Rust + maturin; unset ARCHFLAGS if your shell sets it):
+### Use TNC-2 command mode
+
+Create a terminal pty and connect it to a peer:
 
 ```sh
-env -u ARCHFLAGS maturin build --release -m native/iax/Cargo.toml -i .venv/bin/python3.12
-.venv/bin/pip install native/iax/target/wheels/ham_modem_iax-*.whl
-HAM_MODEM_IAX_SECRET=... .venv/bin/python -m hammodem.main --iax-dial 7300@172.31.73.10 --kiss-tcp 8001
+.venv/bin/python -m hammodem.main --sip-dial 7300@172.31.73.10 \
+  --tnc2-pty ~/.ham-tnc2 --mycall N0CALL --nvram ~/.ham-tnc2.json --modem afsk1200
 ```
 
-```sh
-python3 -m venv .venv && .venv/bin/pip install numpy
-.venv/bin/python -m unittest discover -s tests -t .
-.venv/bin/python tools/afsk_wav.py gen /tmp/test.wav --count 20
-.venv/bin/python tools/afsk_wav.py decode /tmp/test.wav -v
-```
+Open `~/.ham-tnc2` with `minicom` or `screen`, then enter `C K1ABC` at the `cmd:` prompt. TNC-2 starts with four
+streams. Use `STREAM 0` through `STREAM 3` to select one; in converse mode, press Ctrl + backslash (ASCII `0x1C`)
+to cycle between active links. `MAXSTREAM 1` through `MAXSTREAM 10` sets the stream limit. `WRITE` saves settings
+to the configured JSON NVRAM file. See the [multi-stream lab note](lab/TNC2_MULTISTREAM_2026_10_24.md).
 
-License: GPL-3.0-or-later (see [NOTICE](NOTICE)).
+## Selected modem examples
+
+| Mode | Example |
+|---|---|
+| G3RUH 9600 baud | `--modem g3ruh9600 --sip-dial 7316@172.31.73.10` (16 kHz room) |
+| G3RUH 19200 baud | `--modem g3ruh19200 --sip-dial 7348@172.31.73.10` (48 kHz room) |
+| G3RUH 38400 baud | `--modem g3ruh38400 --sip-dial 7348@172.31.73.10` (48 kHz room) |
+| PAM-4 57.6 kbit/s | `--modem pam57600 --sip-dial 7348@172.31.73.10` |
+| Passband QAM 51.2 kbit/s | `--modem qam51200 --sip-dial 7316@172.31.73.10 --txdelay 20` |
+| Direct SIP, no PBX | Listener: `--sip-listen --sip-port 5070`; caller: `--sip-dial x@HOST:5070` |
+
+G.711 is refused for the 16 kHz G3RUH path; use the matching L16-capable room. The [lab reports](lab/) describe
+room rates and other mode-specific requirements.
+
+## Project notes
+
+- [Plan and open work](docs/PLAN.md)
+- [Tests, live trials, and validation limits](docs/TESTING_VALIDATION.md)
+- [Code and research attribution](NOTICE)
+
+Licensed under [GPL-3.0-or-later](LICENSE).

@@ -29,7 +29,7 @@ from ..il2p import Il2pReceiver
 from ..il2p import burst_levels as il2p_burst_levels
 from .afsk import _Fir, lowpass_taps
 from .g3ruh import _dedupe
-from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, track_burst
+from .hdlc import HdlcDecoder, NrziDecoder, NrziEncoder, extend_bits, span_mask, track_burst
 
 CARRIER = 1800.0            # default carrier frequency (Hz); kept for backward compatibility
 
@@ -163,6 +163,9 @@ class PskDemodulator:
         self._acquire = True                 # acquire on whatever arrives first (input may begin mid-signal)
         self._onset = 0
         self._buf_abs = 0                    # absolute internal index of buffer column 0
+        self._spans: list[tuple[int, int]] = []
+        self._erase_delay = len(self._img.taps) - 1
+        self._since = 1 << 30
         self.nrzi = NrziDecoder()
         self.hdlc = HdlcDecoder()
         self.fx25 = Fx25Receiver()
@@ -192,6 +195,9 @@ class PskDemodulator:
             pcm = np.frombuffer(pcm, dtype="<i2")
         track_burst(self)
         x = np.asarray(pcm, dtype=np.float64) / 32768.0
+        if erased:
+            self._spans.append((self._n, self._n + len(x) * self.up + self._erase_delay))
+        self._spans = [span for span in self._spans if span[1] > self._buf_abs]
         level = 10 * np.log10(np.mean(x * x) * 2 + 1e-12) if len(x) else -120.0
         if self.energy_dcd_dbfs is not None:
             self.energy_busy = level > self.energy_dcd_dbfs
@@ -265,6 +271,7 @@ class PskDemodulator:
             self._acquire = False
         n_buf = self.buf.shape[1]
         diffs: list[np.ndarray] = []
+        strobes: list[np.ndarray] = []
         nominal = float(sps)
         while True:
             avail = int((n_buf - 2 - self.pos) // self.period) + 1
@@ -272,6 +279,7 @@ class PskDemodulator:
                 break
             m = min(self.BLOCK, avail)
             p = self.pos + np.arange(m) * self.period
+            strobes.append(p.copy())
             y = self._window(p)
             # Early-late gate on the window-fit magnitude: it peaks exactly at the right strobe on every phase
             # transition. Positive err = the later sample is stronger: move later.
@@ -309,8 +317,20 @@ class PskDemodulator:
             self._acquire = True
             self._onset = self._buf_abs + int(self.pos)
         line = np.array([b for k in idx.tolist() for b in self._phase_to_bits[k]], np.uint8)
+        line_era = None
+        if self._spans and strobes:
+            at = self._buf_abs + np.concatenate(strobes).astype(np.int64)
+            mask = span_mask(self._spans, int(at[0]), int(at[-1] - at[0]) + 1)
+            sym_era = mask[at - at[0]]
+            line_era = np.repeat(sym_era, self.p.bits)
+            self._spans = [span for span in self._spans if span[1] > int(at[-1])]
         lv = np.concatenate(([self.nrzi.level], line))
         data = (lv[1:] == lv[:-1]).astype(np.uint8)
         self.nrzi.level = int(lv[-1])
-        out = self.hdlc.push_bits(data) + self.fx25.feed_bits(data) + self.il2p.feed_bits(line)
+        if line_era is not None:
+            fx_era, self._since = extend_bits(line_era, self._since, 1)
+        else:
+            fx_era = None
+            self._since += len(data)
+        out = self.hdlc.push_bits(data) + self.fx25.feed_bits(data, fx_era) + self.il2p.feed_bits(line, line_era)
         return _dedupe(self, out, len(data))

@@ -72,14 +72,19 @@ class RtpSession:
         self._rx_ts: int | None = None
         self._rx_len = self.frame_samples          # samples in the previous packet (peers choose their own ptime)
         self._last = np.zeros(self.frame_samples, np.int16)
-        self.stats = {"sent": 0, "received": 0, "late_or_duplicate": 0, "concealed_samples": 0, "foreign": 0}
+        self.stats = {"sent": 0, "received": 0, "simulated_dropped": 0,
+                      "late_or_duplicate": 0, "concealed_samples": 0, "foreign": 0}
 
-    def send(self, pcm: np.ndarray) -> None:
+    def send(self, pcm: np.ndarray, *, drop: bool = False) -> None:
         header = struct.pack("!BBHII", 0x80, self.codec.pt, self._seq, self._ts, self._ssrc)
-        try:
-            self.sock.sendto(header + self.codec.encode(pcm), self.remote)
-        except OSError:
-            pass
+        if drop:
+            # Model a packet lost after RTP framing: the next packet keeps the sequence/timestamp gap.
+            self.stats["simulated_dropped"] += 1
+        else:
+            try:
+                self.sock.sendto(header + self.codec.encode(pcm), self.remote)
+            except OSError:
+                pass
         self._seq = (self._seq + 1) & 0xFFFF
         self._ts = (self._ts + len(pcm)) & 0xFFFFFFFF
         self.stats["sent"] += 1

@@ -93,6 +93,30 @@ class Il2pTest(unittest.TestCase):
         self.assertEqual(got, [f])                  # still decoded despite erased flag
         self.assertGreater(r.erasures, 0)
 
+    def test_erased_sync_bits_are_ignored_but_known_bits_still_gate_sync(self):
+        f = Frame.ui("N0CALL", "APRS", "sync erasure").encode()
+        bits = il2p.burst_levels([f], 4, max_fec=True)
+        start = 4 * 8
+        erased = [False] * len(bits)
+        for offset in range(6):
+            bits[start + offset] ^= 1
+            erased[start + offset] = True
+
+        no_era = il2p.Il2pReceiver()
+        self.assertEqual(no_era.feed_bits(bits + [0, 1] * 8), [])
+        with_era = il2p.Il2pReceiver()
+        got = with_era.feed_bits(bits + [0, 1] * 8, erased + [False] * 16)
+        self.assertEqual(got, [f])
+
+    def test_sync_with_too_few_known_bits_is_rejected(self):
+        bits = il2p.burst_levels([frames()[0]], 4, max_fec=True)
+        start = 4 * 8
+        erased = [False] * len(bits)
+        erased[start:start + 9] = [True] * 9
+        # Nine erased sync bits leave only fifteen known bits, below the 16-bit gate.
+        r = il2p.Il2pReceiver()
+        self.assertEqual(r.feed_bits(bits + [0, 1] * 8, erased + [False] * 16), [])
+
 
 class Il2pcCrcTest(unittest.TestCase):
     def test_spec_example_crc_bytes(self):

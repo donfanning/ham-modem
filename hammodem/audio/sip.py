@@ -20,6 +20,8 @@ import re
 import socket
 import time
 import uuid
+import wave
+from pathlib import Path
 
 import numpy as np
 
@@ -132,8 +134,16 @@ class SipLeg:
     def __init__(self, *, dial: str | None = None, listen: bool = False, bind_host: str = "0.0.0.0",
                  sip_port: int = 0, media_port: int = 0, codecs: list[Codec] | None = None,
                  user: str | None = None, password: str | None = None, from_user: str = "ham-modem",
-                 local_ip: str | None = None, redial_after: float = 5.0, sim_loss: float = 0.0) -> None:
-        """``sim_loss``: lab-only, drop that fraction of received RTP packets before the RTP session sees them."""
+                 local_ip: str | None = None, redial_after: float = 5.0, sim_loss: float = 0.0,
+                 sim_tx_silence_every: int = 0, sim_tx_drop_every: int = 0,
+                 sim_tx_gain_db: float = 0.0, sim_mask_tone_hz: float = 0.0,
+                 sim_mask_gain_db: float = -30.0, sim_mask_wav: str | None = None) -> None:
+        """Lab impairments: receive-side RTP drops and periodic silent transmit payloads.
+
+        ``sim_tx_silence_every`` replaces each Nth non-silent outgoing audio block with silence while still sending
+        its RTP packet. ``sim_tx_drop_every`` omits each Nth active packet after advancing its RTP sequence and
+        timestamp. The latter models station-to-bridge packet loss.
+        """
         if not dial and not listen:
             raise ValueError("SipLeg needs dial= or listen=True")
         self.codecs = codecs or [CODECS["pcmu"], CODECS["pcma"]]
@@ -144,6 +154,35 @@ class SipLeg:
         self.user, self._password, self.from_user = user, password, user or from_user
         self.redial_after = redial_after
         self.sim_loss = sim_loss
+        if sim_tx_silence_every < 0 or sim_tx_drop_every < 0:
+            raise ValueError("transmit impairment intervals must be >= 0")
+        if sim_tx_silence_every and sim_tx_drop_every:
+            raise ValueError("choose either transmit silence or transmit drop impairment")
+        self.sim_tx_silence_every = sim_tx_silence_every
+        self.sim_tx_drop_every = sim_tx_drop_every
+        self.sim_tx_gain = 10.0 ** (sim_tx_gain_db / 20.0)
+        if sim_mask_tone_hz < 0 or sim_mask_tone_hz >= self.rate / 2:
+            raise ValueError("sim_mask_tone_hz must be between 0 and Nyquist")
+        self.sim_mask_tone_hz = sim_mask_tone_hz
+        self.sim_mask_amplitude = 32767.0 * 10.0 ** (sim_mask_gain_db / 20.0)
+        self.sim_mask_gain = 10.0 ** (sim_mask_gain_db / 20.0)
+        if sim_mask_wav and sim_mask_tone_hz:
+            raise ValueError("choose either a mask tone or a mask WAV")
+        self._mask_audio = None
+        self._mask_audio_offset = 0
+        if sim_mask_wav:
+            with wave.open(str(Path(sim_mask_wav)), "rb") as source:
+                if (source.getnchannels(), source.getsampwidth(), source.getframerate(), source.getcomptype()) != \
+                        (1, 2, self.rate, "NONE"):
+                    raise ValueError(f"mask WAV must be mono, 16-bit PCM at {self.rate} Hz")
+                self._mask_audio = np.frombuffer(source.readframes(source.getnframes()), dtype="<i2").copy()
+            if not len(self._mask_audio):
+                raise ValueError("mask WAV must not be empty")
+        self._mask_phase = 0
+        self.tx_masker_blocks = 0
+        self._tx_active_blocks = 0
+        self.tx_silenced_blocks = 0
+        self.tx_dropped_blocks = 0
         self._rng = random.Random()
         self.target: tuple[str, int] | None = None
         self.target_uri = ""
@@ -204,7 +243,32 @@ class SipLeg:
 
     def send(self, pcm: np.ndarray) -> None:
         if self.rtp is not None and self.state == "up":
-            self.rtp.send(pcm)
+            pcm = np.asarray(pcm)
+            mask_audio = getattr(self, "_mask_audio", None)
+            if (self.sim_mask_tone_hz or mask_audio is not None) and not np.any(pcm):
+                if mask_audio is not None:
+                    offsets = (np.arange(len(pcm)) + self._mask_audio_offset) % len(mask_audio)
+                    pcm = np.clip(np.rint(mask_audio[offsets].astype(np.float64) * self.sim_mask_gain),
+                                  -32768, 32767).astype(np.int16)
+                    self._mask_audio_offset = (self._mask_audio_offset + len(pcm)) % len(mask_audio)
+                else:
+                    idx = np.arange(len(pcm)) + self._mask_phase
+                    phase = 2.0 * np.pi * self.sim_mask_tone_hz * idx / self.rate
+                    pcm = np.rint(self.sim_mask_amplitude * np.sin(phase)).astype(np.int16)
+                    self._mask_phase += len(pcm)
+                self.tx_masker_blocks += 1
+            if self.sim_tx_gain != 1.0:
+                pcm = np.clip(np.rint(pcm.astype(np.float64) * self.sim_tx_gain), -32768, 32767).astype(np.int16)
+            drop = False
+            if (self.sim_tx_silence_every or self.sim_tx_drop_every) and np.any(pcm):
+                self._tx_active_blocks += 1
+                if self.sim_tx_silence_every and self._tx_active_blocks % self.sim_tx_silence_every == 0:
+                    pcm = np.zeros_like(pcm)
+                    self.tx_silenced_blocks += 1
+                elif self.sim_tx_drop_every and self._tx_active_blocks % self.sim_tx_drop_every == 0:
+                    drop = True
+                    self.tx_dropped_blocks += 1
+            self.rtp.send(pcm, drop=drop)
 
     def close(self) -> None:
         if self.state == "up":

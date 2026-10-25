@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+: "${KISS_HOST:=172.31.73.1}"
+: "${KISS_PORT:=18001}"
+rm -f /dev/ttyTNC
+rm -f /run/lock/LCK..ttyTNC
+socat pty,link=/dev/ttyTNC,raw,echo=0,wait-slave "tcp:${KISS_HOST}:${KISS_PORT},keepalive" &
+BRIDGE_PID=$!
+trap 'kill "$BRIDGE_PID" 2>/dev/null || true' EXIT INT TERM
+for n in $(seq 1 50); do
+    [ -L /dev/ttyTNC ] && break
+    sleep 0.1
+done
+exec ./jnos -v

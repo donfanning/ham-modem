@@ -16,7 +16,7 @@ N = 800
 
 
 def _run_pair(a, b, ticks, *, send_at=None, text=b"HELLO", send_b_at=None,
-              text_b=b"WORLD", disconnect_at=None, drop=None, n=N):
+              text_b=b"WORLD", disconnect_at=None, drop=None, drop_b=None, n=N):
     """Clock two links against each other, optionally dropping a burst."""
     ra = np.zeros(n, np.int16)
     rb = np.zeros(n, np.int16)
@@ -26,6 +26,9 @@ def _run_pair(a, b, ticks, *, send_at=None, text=b"HELLO", send_b_at=None,
         tb = b.tick(rb, n)
         if drop is not None and drop[0] <= i < drop[1]:
             ta[:] = 0
+            dropped += 1
+        if drop_b is not None and drop_b[0] <= i < drop_b[1]:
+            tb[:] = 0
             dropped += 1
         ra, rb = tb, ta
         if send_at is not None and i == send_at:
@@ -85,6 +88,39 @@ class Pactor2LinkTest(unittest.TestCase):
         self.assertGreater(dropped, 0)
         self.assertGreaterEqual(a.stats.retries, 1)
         self.assertIn(b"HELLO", received)
+
+    def test_lost_ack_retries_without_duplicate_delivery(self):
+        for link_cls in (Pactor2Link, Pactor3Link):
+            with self.subTest(link=link_cls.__name__):
+                received = []
+                a = link_cls("A")
+                b = link_cls("B", on_text=received.append)
+                a.connect("B")
+                # Drop B's first reply after A's data burst. A must retry; B
+                # must ACK that retry without delivering the payload twice.
+                _run_pair(a, b, 240, send_at=40, drop_b=(50, 60))
+
+                self.assertGreaterEqual(a.stats.retries, 1)
+                self.assertIsNone(a._current)  # The retry's ACK completed the send.
+                self.assertEqual(received.count(b"HELLO"), 1)
+
+    def test_retry_exhaustion_fails_without_delivering_lost_data(self):
+        for link_cls in (Pactor2Link, Pactor3Link):
+            with self.subTest(link=link_cls.__name__):
+                received, events = [], []
+                a = link_cls("A", max_retries=1, on_event=events.append)
+                b = link_cls("B", on_text=received.append)
+                a.connect("B")
+                # Keep dropping A's uplink through the retry deadline. With a
+                # one-retry budget the link must report failure and clear its
+                # pending frame rather than claiming delivery.
+                _run_pair(a, b, 340, send_at=40, drop=(42, 330))
+
+                self.assertEqual(received, [])
+                self.assertEqual(a.state, "idle")
+                self.assertIsNone(a._current)
+                self.assertFalse(a._waiting)
+                self.assertTrue(any(e == "link failure (timeout)" for e in events))
 
     def test_text_in_both_directions(self):
         a_rx, b_rx = [], []

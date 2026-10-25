@@ -30,6 +30,7 @@ TAGS = {
     0x0A: (0xAB69DB6A543188D6, 192, 128), 0x0B: (0x4A4ABEC4A724B796, 128, 64),
 }
 TAG_MAX_ERRORS = 8                     # bit differences tolerated when matching a correlation tag
+TAG_MIN_KNOWN_BITS = 32                # reject hits supported by fewer than half the tag's bits
 
 # ------------------------------------------------------------------------------------------- GF(2^8) and RS
 
@@ -303,7 +304,8 @@ class Fx25Receiver:
             era_win = np.lib.stride_tricks.sliding_window_view(ext_era.view(np.uint8), 64)
             era_regs = np.packbits(era_win, axis=1, bitorder="little").view("<u8")[:, 0]
             dist = np.bitwise_count((regs[:, None] ^ _TAG_ARRAY[None, :]) & ~era_regs[:, None])
-            hit = np.argwhere(dist <= TAG_MAX_ERRORS)
+            enough_known = np.bitwise_count(era_regs) <= 64 - TAG_MIN_KNOWN_BITS
+            hit = np.argwhere((dist <= TAG_MAX_ERRORS) & enough_known[:, None])
             if len(hit) == 0:
                 self.hist = ext[-63:]
                 self.hist_era = ext_era[-63:]
